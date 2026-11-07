@@ -28,22 +28,21 @@ def get_video_id(url: str) -> str:
 
 def download(vid: str, folder: str) -> Path:
     opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio",
+        "format": "bestaudio[ext=m4a][acodec^=mp4a]/bestaudio[ext=m4a]",
         "outtmpl": str(Path(folder) / "track.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 20,
         "retries": 2,
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "128"}],
     }
     opts['logger'] = logging.getLogger('yt_dlp')
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={vid}"])
-    matches = list(Path(folder).glob("track.*"))
+    matches = list(Path(folder).glob("track.m4a"))
     if not matches:
         raise RuntimeError("No output file")
-    file = next((p for p in matches if p.suffix == ".m4a"), matches[0])
+    file = matches[0]
     if file.stat().st_size > MAX_BYTES:
         raise ValueError("Audio exceeds 32 MB")
     return file
