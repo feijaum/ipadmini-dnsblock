@@ -127,6 +127,69 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     [self.layer addSublayer:emitter];
 }
 
+- (void)addNightStars
+{
+    CGSize size = self.bounds.size;
+    for (NSUInteger index = 0; index < 28; index++) {
+        CGFloat diameter = index % 5 == 0 ? 3 : 1.5;
+        CALayer *star = [CALayer layer];
+        star.bounds = CGRectMake(0, 0, diameter, diameter);
+        star.position = CGPointMake(size.width * ((index * 37 + 11) % 101) / 101,
+                                    size.height * ((index * 67 + 17) % 103) / 103);
+        star.cornerRadius = diameter / 2;
+        star.backgroundColor = Shade(0xe3eeff, 1).CGColor;
+        star.opacity = 0.48;
+        [self.layer addSublayer:star];
+        if (self.running) {
+            CABasicAnimation *twinkle = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            twinkle.fromValue = @0.22;
+            twinkle.toValue = @0.78;
+            twinkle.duration = 2.8 + (index % 6) * 0.44;
+            twinkle.timeOffset = (index % 7) * 0.4;
+            twinkle.autoreverses = YES;
+            twinkle.repeatCount = HUGE_VALF;
+            [star addAnimation:twinkle forKey:@"twinkle"];
+        }
+    }
+}
+
+- (void)addFog
+{
+    CGSize size = self.bounds.size;
+    for (NSUInteger index = 0; index < 3; index++) {
+        CAGradientLayer *mist = [CAGradientLayer layer];
+        mist.bounds = CGRectMake(0, 0, size.width * 1.5, size.height * 0.26);
+        mist.position = CGPointMake(size.width * 0.5, size.height * (0.38 + index * 0.22));
+        mist.colors = @[(__bridge id)Shade(0xe1edf7, 0).CGColor, (__bridge id)Shade(0xe1edf7, 0.30).CGColor,
+                        (__bridge id)Shade(0xe1edf7, 0).CGColor];
+        [self.layer addSublayer:mist];
+        if (self.running) {
+            CABasicAnimation *drift = [CABasicAnimation animationWithKeyPath:@"position.y"];
+            drift.fromValue = @(mist.position.y - 22);
+            drift.toValue = @(mist.position.y + 22);
+            drift.duration = 12 + index * 3;
+            drift.autoreverses = YES;
+            drift.repeatCount = HUGE_VALF;
+            [mist addAnimation:drift forKey:@"mist"];
+        }
+    }
+}
+
+- (void)addStormGlow
+{
+    CALayer *glow = [CALayer layer];
+    glow.frame = self.bounds;
+    glow.backgroundColor = Shade(0xdce9ff, 1).CGColor;
+    glow.opacity = 0;
+    [self.layer addSublayer:glow];
+    CAKeyframeAnimation *pulse = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    pulse.values = @[@0, @0, @0.17, @0, @0];
+    pulse.keyTimes = @[@0, @0.78, @0.81, @0.85, @1];
+    pulse.duration = 16;
+    pulse.repeatCount = HUGE_VALF;
+    [glow addAnimation:pulse forKey:@"stormGlow"];
+}
+
 - (void)redraw
 {
     self.drawnSize = self.bounds.size;
@@ -148,14 +211,18 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     gradient.colors = @[(__bridge id)Shade(top, 1).CGColor, (__bridge id)Shade(bottom, 1).CGColor];
     [self.layer addSublayer:gradient];
 
-    if (clear) [self addOrbAt:CGPointMake(width * 0.81, height * 0.22) size:MIN(98, width * 0.16)];
-    if (self.sky >= WeatherSkyPartlyCloudy) {
-        CGFloat opacity = self.sky == WeatherSkyFog ? 0.31 : (self.daylight ? 0.27 : 0.18);
+    if (clear && !self.daylight) [self addNightStars];
+    if (clear) [self addOrbAt:CGPointMake(width * 0.88, height * 0.78) size:MIN(98, width * 0.16)];
+    if (self.sky == WeatherSkyFog) {
+        [self addFog];
+    } else if (self.sky >= WeatherSkyPartlyCloudy) {
+        CGFloat opacity = self.daylight ? 0.27 : 0.18;
         [self addCloudAt:CGPointMake(width * 0.16, height * 0.26) scale:1.55 opacity:opacity duration:19];
         [self addCloudAt:CGPointMake(width * 0.74, height * 0.39) scale:1.8 opacity:opacity duration:24];
         [self addCloudAt:CGPointMake(width * 0.43, height * 0.68) scale:1.9 opacity:opacity * 0.72 duration:28];
     }
     if (wet && self.running) [self addPrecipitationSnow:self.sky == WeatherSkySnow];
+    if (self.sky == WeatherSkyStorm && self.running) [self addStormGlow];
 }
 @end
 

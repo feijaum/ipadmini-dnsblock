@@ -51,6 +51,9 @@ static NSDictionary *RequestStatus(const char *command)
 }
 
 static NSString *const CalendarPreference = @"familyCalendar";
+static NSString *const PhotoFillPreference = @"photoFillMode";
+enum { PhotoHistoryLimit = 8 };
+
 static NSString *const PhotosPreference = @"familyPhotos";
 
 static UIColor *Color(NSUInteger hex)
@@ -110,6 +113,11 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UILabel *photoHeading;
 @property(nonatomic, strong) UILabel *photoHint;
 @property(nonatomic, strong) UIImageView *photo;
+@property(nonatomic, strong) UIButton *previousPhotoButton;
+@property(nonatomic, strong) UIButton *nextPhotoButton;
+@property(nonatomic, strong) UIButton *photoFitButton;
+@property(nonatomic, strong) NSMutableArray *photoHistory;
+@property(nonatomic) NSUInteger photoHistoryIndex;
 @property(nonatomic, strong) DrivePhotos *drivePhotos;
 @property(nonatomic, strong) UIButton *filterButton;
 @property(nonatomic, strong) UIButton *settingsButton;
@@ -189,7 +197,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
     self.photoCard = Card(self.view, 0x223247);
     self.photo = [[UIImageView alloc] init];
-    self.photo.contentMode = UIViewContentModeScaleAspectFill;
+    self.photo.backgroundColor = Color(0x152131);
+    self.photoHistory = [NSMutableArray array];
     self.photo.clipsToBounds = YES;
     [self.photoCard addSubview:self.photo];
     UIView *photoCaption = [[UIView alloc] init];
@@ -197,6 +206,14 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self.photoCard addSubview:photoCaption];
     self.photoHeading = Label(photoCaption, 13, @"HelveticaNeue-Medium", 0xf2f7ff);
     self.photoHeading.text = @"FOTOS DA FAMÍLIA";
+    self.photoFitButton = Button(photoCaption, @"", self, @selector(togglePhotoFit));
+    [self applyPhotoFit];
+    self.previousPhotoButton = Button(self.photoCard, @"‹", self, @selector(previousPhoto));
+    self.previousPhotoButton.accessibilityLabel = @"Foto anterior";
+    self.previousPhotoButton.titleLabel.font = [UIFont systemFontOfSize:32];
+    self.nextPhotoButton = Button(self.photoCard, @"›", self, @selector(nextPhoto));
+    self.nextPhotoButton.accessibilityLabel = @"Próxima foto";
+    self.nextPhotoButton.titleLabel.font = [UIFont systemFontOfSize:32];
     self.photoHint = Label(self.photoCard, 15, @"HelveticaNeue", 0xb5cce7);
     self.photoHint.text = @"Adicione fotos em Ajustes";
     self.photoHint.textAlignment = NSTextAlignmentCenter;
@@ -240,23 +257,27 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
     CGFloat top = buttonY + 44 + gap;
     CGFloat available = height - top - padding;
-    CGFloat clockHeight = floor(available * (landscape ? 0.46 : 0.39));
-    self.clockCard.frame = CGRectMake(padding, top, inner, clockHeight);
-    CGFloat remainder = available - clockHeight - gap;
-    if (landscape) {
-        CGFloat column = floor((inner - gap) * 0.55);
-        self.agendaCard.frame = CGRectMake(padding, top + clockHeight + gap, column, remainder);
-        self.photoCard.frame = CGRectMake(padding + column + gap, top + clockHeight + gap, inner - column - gap, remainder);
+    BOOL sideBySide = landscape || width >= 600;
+    CGFloat photoHeight = floor(available * (sideBySide ? 0.59 : 0.48));
+    self.photoCard.frame = CGRectMake(padding, top, inner, photoHeight);
+    CGFloat bottomY = top + photoHeight + gap;
+    CGFloat remainder = available - photoHeight - gap;
+    if (sideBySide) {
+        CGFloat calendarWidth = floor((inner - gap) * 0.47);
+        self.agendaCard.frame = CGRectMake(padding, bottomY, calendarWidth, remainder);
+        self.clockCard.frame = CGRectMake(padding + calendarWidth + gap, bottomY, inner - calendarWidth - gap, remainder);
     } else {
-        CGFloat agendaHeight = floor((remainder - gap) * 0.52);
-        self.agendaCard.frame = CGRectMake(padding, top + clockHeight + gap, inner, agendaHeight);
-        self.photoCard.frame = CGRectMake(padding, CGRectGetMaxY(self.agendaCard.frame) + gap, inner, remainder - agendaHeight - gap);
+        CGFloat calendarHeight = floor((remainder - gap) * 0.61);
+        self.agendaCard.frame = CGRectMake(padding, bottomY, inner, calendarHeight);
+        self.clockCard.frame = CGRectMake(padding, bottomY + calendarHeight + gap, inner, remainder - calendarHeight - gap);
     }
-    CGFloat clockFaceHeight = clockHeight * 0.62;
-    self.clock.font = [UIFont fontWithName:@"HelveticaNeue-Light" size:MIN(154, clockFaceHeight * 0.84)];
-    self.clock.frame = CGRectMake(12, clockHeight * 0.04, inner - 24, clockFaceHeight);
-    self.date.frame = CGRectMake(12, clockHeight * 0.66, inner - 24, clockHeight * 0.16);
-    self.weatherLabel.frame = CGRectMake(12, clockHeight * 0.82, inner - 24, clockHeight * 0.14);
+    CGFloat clockWidth = self.clockCard.bounds.size.width;
+    CGFloat clockHeight = self.clockCard.bounds.size.height;
+    CGFloat clockFaceHeight = clockHeight * 0.57;
+    self.clock.font = [UIFont fontWithName:@"HelveticaNeue-Light" size:MIN(110, clockFaceHeight * 0.88)];
+    self.clock.frame = CGRectMake(12, clockHeight * 0.07, clockWidth - 24, clockFaceHeight);
+    self.date.frame = CGRectMake(12, clockHeight * 0.66, clockWidth - 24, clockHeight * 0.16);
+    self.weatherLabel.frame = CGRectMake(12, clockHeight * 0.82, clockWidth - 24, clockHeight * 0.14);
     CGFloat agendaWidth = self.agendaCard.bounds.size.width;
     CGFloat agendaHeight = self.agendaCard.bounds.size.height;
     self.agendaHeading.frame = CGRectMake(16, 10, agendaWidth - 32, 20);
@@ -275,12 +296,17 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     CGFloat textHeight = [self.agenda sizeThatFits:CGSizeMake(legendWidth, CGFLOAT_MAX)].height;
     self.agenda.frame = CGRectMake(0, 0, legendWidth, textHeight);
     self.legendScroll.contentSize = CGSizeMake(legendWidth, textHeight);
-    self.photo.frame = self.photoCard.bounds;
     CGFloat photoWidth = self.photoCard.bounds.size.width;
-    CGFloat photoHeight = self.photoCard.bounds.size.height;
-    self.photoHeading.superview.frame = CGRectMake(0, 0, photoWidth, 36);
-    self.photoHeading.frame = CGRectMake(16, 0, photoWidth - 32, 36);
-    self.photoHint.frame = CGRectMake(8, 36, photoWidth - 16, MAX(0, photoHeight - 36));
+    CGFloat panelHeight = self.photoCard.bounds.size.height;
+    CGFloat captionHeight = 48;
+    self.photo.frame = CGRectMake(0, captionHeight, photoWidth, MAX(0, panelHeight - captionHeight));
+    self.photoHeading.superview.frame = CGRectMake(0, 0, photoWidth, captionHeight);
+    self.photoHeading.frame = CGRectMake(16, 0, photoWidth - 126, captionHeight);
+    self.photoFitButton.frame = CGRectMake(photoWidth - 110, 4, 102, 40);
+    self.photoHint.frame = CGRectInset(self.photo.frame, 52, 0);
+    CGFloat arrowsY = captionHeight + MAX(0, (panelHeight - captionHeight - 48) / 2);
+    self.previousPhotoButton.frame = CGRectMake(8, arrowsY, 44, 48);
+    self.nextPhotoButton.frame = CGRectMake(photoWidth - 52, arrowsY, 44, 48);
 }
 
 - (void)updateClock
@@ -485,24 +511,80 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     return [folder stringByAppendingPathComponent:name];
 }
 
-- (void)nextPhoto
+- (void)applyPhotoFit
 {
-    self.lastPhotoChange = [NSProcessInfo processInfo].systemUptime;
-    UIImage *image = [self.drivePhotos nextImage];
-    if (!image && self.showingDrivePhoto && self.drivePhotos.hasAlbum) return;
-    self.showingDrivePhoto = image != nil;
-    NSArray *photos = [[NSUserDefaults standardUserDefaults] arrayForKey:PhotosPreference];
-    if (!image && photos.count) {
-        self.photoIndex = self.photoIndex >= photos.count - 1 ? 0 : self.photoIndex + 1;
-        image = [UIImage imageWithContentsOfFile:[self photoPath:photos[self.photoIndex]]];
-    }
-    self.photoHint.text = self.drivePhotos.connected ? self.drivePhotos.status : @"Adicione fotos em Ajustes";
+    BOOL fill = [[NSUserDefaults standardUserDefaults] boolForKey:PhotoFillPreference];
+    self.photo.contentMode = fill ? UIViewContentModeScaleAspectFill : UIViewContentModeScaleAspectFit;
+    [self.photoFitButton setTitle:(fill ? @"Preencher" : @"Ajustar") forState:UIControlStateNormal];
+    self.photoFitButton.accessibilityLabel = fill ? @"Preencher, cortar as bordas" : @"Ajustar, exibir a foto inteira";
+    self.photoFitButton.accessibilityHint = @"Toque para alternar o enquadramento";
+}
+
+- (void)togglePhotoFit
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:![defaults boolForKey:PhotoFillPreference] forKey:PhotoFillPreference];
+    [self applyPhotoFit];
+}
+
+- (void)showPhoto:(UIImage *)image
+{
     if (image != self.photo.image) {
         [UIView transitionWithView:self.photo duration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.55
             options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionBeginFromCurrentState
             animations:^{ self.photo.image = image; } completion:nil];
     }
+    self.previousPhotoButton.enabled = self.photoHistoryIndex > 0;
+    self.nextPhotoButton.enabled = image != nil || self.drivePhotos.hasAlbum;
+    self.photoHint.text = self.drivePhotos.connected ? self.drivePhotos.status : @"Adicione fotos em Ajustes";
     self.photoHint.hidden = image != nil;
+}
+
+- (void)previousPhoto
+{
+    if (self.photoHistoryIndex == 0) return;
+    self.lastPhotoChange = [NSProcessInfo processInfo].systemUptime;
+    self.photoHistoryIndex--;
+    [self showPhoto:self.photoHistory[self.photoHistoryIndex]];
+}
+
+- (void)clearPhotoHistory
+{
+    [self.photoHistory removeAllObjects];
+    self.photoHistoryIndex = 0;
+}
+
+- (void)nextPhoto
+{
+    self.lastPhotoChange = [NSProcessInfo processInfo].systemUptime;
+    if (self.showingDrivePhoto && !self.drivePhotos.hasAlbum) {
+        self.showingDrivePhoto = NO;
+        [self clearPhotoHistory];
+    }
+    if (self.photoHistoryIndex + 1 < self.photoHistory.count) {
+        self.photoHistoryIndex++;
+        [self showPhoto:self.photoHistory[self.photoHistoryIndex]];
+        return;
+    }
+
+    UIImage *image = [self.drivePhotos nextImage];
+    if (image && !self.showingDrivePhoto) {
+        self.showingDrivePhoto = YES;
+        [self clearPhotoHistory];
+    }
+    if (!image && self.showingDrivePhoto) return;
+
+    NSArray *photos = [[NSUserDefaults standardUserDefaults] arrayForKey:PhotosPreference];
+    if (!image && photos.count) {
+        self.photoIndex = self.photoIndex >= photos.count - 1 ? 0 : self.photoIndex + 1;
+        image = [UIImage imageWithContentsOfFile:[self photoPath:photos[self.photoIndex]]];
+    }
+    if (image && image != self.photoHistory.lastObject) {
+        if (self.photoHistory.count == PhotoHistoryLimit) [self.photoHistory removeObjectAtIndex:0];
+        [self.photoHistory addObject:image];
+        self.photoHistoryIndex = self.photoHistory.count - 1;
+    }
+    [self showPhoto:image];
 }
 
 - (void)addPhoto
@@ -566,6 +648,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
             [[NSFileManager defaultManager] removeItemAtPath:[self photoPath:name] error:NULL];
         }
         [defaults removeObjectForKey:PhotosPreference];
+        if (!self.showingDrivePhoto) [self clearPhotoHistory];
         [self nextPhoto];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
