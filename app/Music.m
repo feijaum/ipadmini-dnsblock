@@ -109,6 +109,55 @@ totalBytesExpectedToWrite:(int64_t)expected
 }
 @end
 
+@interface YouTubeAudioTransport : MusicTransport <NSURLSessionDataDelegate>
+@property(nonatomic, strong) NSMutableData *audioData;
+@property(nonatomic, strong) NSHTTPURLResponse *response;
+@property(nonatomic) BOOL oversized;
+@property(nonatomic, copy) void (^finished)(NSData *, NSHTTPURLResponse *, NSError *);
+@end
+
+@implementation YouTubeAudioTransport
+
+- (void)URLSession:(__unused NSURLSession *)session dataTask:(__unused NSURLSessionDataTask *)task
+    didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completion
+{
+    self.response = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+    NSString *mime = response.MIMEType.lowercaseString;
+    BOOL audio = [mime hasPrefix:@"audio/"] || [mime isEqualToString:@"application/octet-stream"];
+    self.oversized = response.expectedContentLength > (int64_t)MaxTrackBytes;
+    BOOL accept = self.response.statusCode == 200 && audio && !self.oversized &&
+        AllowedMusicURL(response.URL) && CentralYouTubeMediaHost(response.URL.host);
+    if (accept) self.audioData = [[NSMutableData alloc] init];
+    completion(accept ? NSURLSessionResponseAllow : NSURLSessionResponseCancel);
+}
+
+- (void)URLSession:(__unused NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data
+{
+    if (!self.audioData) return;
+    if (data.length > MaxTrackBytes - self.audioData.length) {
+        self.oversized = YES;
+        self.audioData = nil;
+        [task cancel];
+        return;
+    }
+    [self.audioData appendData:data];
+}
+
+- (void)URLSession:(NSURLSession *)session task:(__unused NSURLSessionTask *)task didCompleteWithError:(NSError *)error
+{
+    if (self.oversized) {
+        error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil];
+    } else if (self.response && !self.audioData && error.code == NSURLErrorCancelled) {
+        // Report the HTTP status or the invalid response rather than our cancellation.
+        error = nil;
+    }
+    self.finished(error ? nil : self.audioData, self.response, error);
+    self.finished = nil;
+    self.audioData = nil;
+    [session finishTasksAndInvalidate];
+}
+@end
+
 @interface MusicSearch : UITableViewController <UISearchBarDelegate>
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSURLSessionDataTask *searchTask;
@@ -284,7 +333,7 @@ totalBytesExpectedToWrite:(int64_t)expected
 @property(nonatomic, strong) NSURLSessionDataTask *youtubeLookup;
 @property(nonatomic, copy) NSArray *youtubeQueue;
 @property(nonatomic) NSUInteger youtubeIndex;
-@property(nonatomic, strong) NSURLSessionDownloadTask *download;
+@property(nonatomic, strong) NSURLSessionTask *download;
 @property(nonatomic, strong) AVAudioPlayer *audio;
 @property(nonatomic, strong) AVPlayer *radio;
 @property(nonatomic, strong) AVPlayerItem *radioItem;
@@ -377,7 +426,7 @@ totalBytesExpectedToWrite:(int64_t)expected
         return;
     }
     NSURL *url = MusicURL([NSString stringWithFormat:@"/v1/tracks/%@/stream", track[@"id"]], nil);
-    [self downloadAudio:[NSURLRequest requestWithURL:url] fromYouTube:NO];
+    [self downloadAudius:[NSURLRequest requestWithURL:url]];
 }
 
 static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NSError *error)
@@ -388,6 +437,8 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
         NSInteger code = error.code;
         if (code <= NSURLErrorSecureConnectionFailed && code >= NSURLErrorClientCertificateRequired)
             reason = [NSString stringWithFormat:@"TLS %ld", (long)code];
+        else if (code == NSURLErrorNoPermissionsToReadFile) reason = @"sem acesso ao arquivo (-1102)";
+        else if (code == NSURLErrorDataLengthExceedsMaximum) reason = @"áudio acima do limite de 32 MB";
         else if (code == NSURLErrorCancelled) reason = @"conexão cancelada (-999)";
         else if (code == NSURLErrorTimedOut) reason = @"tempo esgotado (-1001)";
         else reason = [NSString stringWithFormat:@"rede %ld", (long)code];
@@ -494,30 +545,66 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
             self.summary = @"Baixando áudio do YouTube…";
             NSURLRequest *download = [NSURLRequest requestWithURL:audio
                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:25];
-            [self downloadAudio:download fromYouTube:YES];
+            [self downloadYouTubeAudio:download];
         });
     }];
     [self.youtubeLookup resume];
     if (self.didUpdate) self.didUpdate();
 }
 
-- (void)downloadAudio:(NSURLRequest *)request fromYouTube:(BOOL)youtube
+- (void)startAudioPlayer:(AVAudioPlayer *)player
+{
+    self.audio = player;
+    self.audio.delegate = self;
+    if (self.audio) {
+        [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
+        [[AVAudioSession sharedInstance] setActive:YES error:NULL];
+    }
+    if ([self.audio play]) self.summary = self.trackTitle;
+    else [self clearAudio];
+}
+
+- (void)downloadYouTubeAudio:(NSURLRequest *)request
+{
+    NSUInteger generation = self.generation;
+    // The system download task can fail with -1102 on legacy installations.
+    // Feed a bounded data response directly to the native AAC player.
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    configuration.HTTPShouldSetCookies = NO;
+    configuration.URLCache = nil;
+    configuration.timeoutIntervalForResource = 120;
+    YouTubeAudioTransport *transport = [[YouTubeAudioTransport alloc] init];
+    transport.finished = ^(NSData *data, NSHTTPURLResponse *response, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.generation != generation) return;
+            self.download = nil;
+            AVAudioPlayer *player = data.length ? [[AVAudioPlayer alloc] initWithData:data error:NULL] : nil;
+            [self startAudioPlayer:player];
+            if (!self.audio) {
+                self.summary = data.length ? @"YouTube · player\nNão abriu o AAC" : YouTubeFailure(@"download", response, error);
+            }
+            if (self.didUpdate) self.didUpdate();
+        });
+    };
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration delegate:transport delegateQueue:nil];
+    self.download = [session dataTaskWithRequest:request];
+    [self.download resume];
+    if (self.didUpdate) self.didUpdate();
+}
+
+- (void)downloadAudius:(NSURLRequest *)request
 {
     NSUInteger generation = self.generation;
     self.download = [self.session downloadTaskWithRequest:request completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         NSURL *file = nil;
-        NSUInteger size = 0;
-        if (location) {
-            NSNumber *sizeValue = nil;
-            [location getResourceValue:&sizeValue forKey:NSURLFileSizeKey error:NULL];
-            size = sizeValue.unsignedIntegerValue;
-        }
+        NSNumber *size = nil;
+        if (location) [location getResourceValue:&size forKey:NSURLFileSizeKey error:NULL];
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         NSString *mime = response.MIMEType.lowercaseString;
-        BOOL allowed = AllowedMusicURL(response.URL) && (!youtube || CentralYouTubeMediaHost(response.URL.host));
-        if (!error && allowed && http.statusCode == 200 && size > 0 && size <= MaxTrackBytes
-            && ([mime hasPrefix:@"audio/"] || [mime isEqualToString:@"application/octet-stream"])) {
-            NSString *name = [NSString stringWithFormat:@"central-music-%@.%@", [[NSUUID UUID] UUIDString], youtube ? @"m4a" : @"mp3"];
+        if (!error && AllowedMusicURL(response.URL) && http.statusCode == 200 &&
+            size.unsignedIntegerValue > 0 && size.unsignedIntegerValue <= MaxTrackBytes &&
+            ([mime hasPrefix:@"audio/"] || [mime isEqualToString:@"application/octet-stream"])) {
+            NSString *name = [NSString stringWithFormat:@"central-music-%@.mp3", [[NSUUID UUID] UUIDString]];
             NSURL *destination = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
             if ([[NSFileManager defaultManager] moveItemAtURL:location toURL:destination error:NULL]) file = destination;
         }
@@ -528,18 +615,9 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
             }
             self.download = nil;
             self.audioFile = file;
-            self.audio = file ? [[AVAudioPlayer alloc] initWithContentsOfURL:file error:NULL] : nil;
-            self.audio.delegate = self;
-            if (self.audio) {
-                [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
-                [[AVAudioSession sharedInstance] setActive:YES error:NULL];
-            }
-            if (self.audio && [self.audio play]) self.summary = self.trackTitle;
-            else {
-                [self clearAudio];
-                self.summary = youtube ? (file ? @"YouTube · player\nNão abriu o AAC" : YouTubeFailure(@"download", http, error)) :
-                    @"Não foi possível tocar · busque outra música";
-            }
+            AVAudioPlayer *player = file ? [[AVAudioPlayer alloc] initWithContentsOfURL:file error:NULL] : nil;
+            [self startAudioPlayer:player];
+            if (!self.audio) self.summary = @"Não foi possível tocar · busque outra música";
             if (self.didUpdate) self.didUpdate();
         });
     }];
