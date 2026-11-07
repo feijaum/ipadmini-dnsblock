@@ -52,6 +52,21 @@ static NSDictionary *RequestStatus(const char *command)
 }
 
 static NSString *const CalendarPreference = @"familyCalendar";
+static NSString *const MusicLinksPreference = @"houseMusicLinks";
+
+static NSString *MusicLinkService(NSURL *url)
+{
+    if (![url.scheme.lowercaseString isEqualToString:@"https"] || url.user || url.password ||
+        (url.port && url.port.integerValue != 443) || url.path.length < 2) return nil;
+    NSString *host = url.host.lowercaseString;
+    if ([host isEqualToString:@"open.spotify.com"] || [host isEqualToString:@"spotify.link"]) return @"Spotify";
+    if ([host isEqualToString:@"youtu.be"] || [host isEqualToString:@"youtube.com"] ||
+        [host isEqualToString:@"www.youtube.com"] || [host isEqualToString:@"music.youtube.com"] ||
+        [host isEqualToString:@"m.youtube.com"]) return @"YouTube";
+    if ([host isEqualToString:@"music.apple.com"]) return @"Apple Music";
+    return nil;
+}
+
 static NSString *const PhotoFillPreference = @"photoFillMode";
 
 static NSString *const PhotosPreference = @"familyPhotos";
@@ -96,7 +111,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     return button;
 }
 
-@interface HomePanel : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@interface HomePanel : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UITableViewDelegate, UITableViewDataSource>
 @property(nonatomic, strong) UIView *clockCard;
 @property(nonatomic, strong) UIView *agendaCard;
 @property(nonatomic, strong) UIView *photoCard;
@@ -118,6 +133,14 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UIButton *filterButton;
 @property(nonatomic, strong) UIButton *settingsButton;
 @property(nonatomic, strong) HouseMusic *music;
+@property(nonatomic, strong) UIView *musicCard;
+@property(nonatomic, strong) UIScrollView *musicBody;
+@property(nonatomic, strong) UILabel *musicHeading;
+@property(nonatomic, strong) UILabel *musicSummary;
+@property(nonatomic, strong) UIButton *musicAddButton;
+@property(nonatomic, strong) UITableView *musicLinks;
+@property(nonatomic, strong) UILabel *musicEmpty;
+@property(nonatomic, strong) NSMutableArray *savedMusic;
 @property(nonatomic, strong) UIButton *musicSearchButton;
 @property(nonatomic, strong) UIButton *musicToggleButton;
 @property(nonatomic, strong) NSDateFormatter *clockFormat;
@@ -156,12 +179,33 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.settingsButton = Button(self.view, @"⚙  Ajustes", self, @selector(showSettings));
     self.settingsButton.accessibilityLabel = @"Configurações";
     self.music = [[HouseMusic alloc] init];
-    self.musicSearchButton = Button(self.view, @"", self, @selector(searchMusic));
-    self.musicSearchButton.accessibilityHint = @"Abre a busca de faixas de áudio do Audius";
-    self.musicSearchButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.musicSearchButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-    self.musicSearchButton.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
-    self.musicToggleButton = Button(self.view, @"Tocar", self, @selector(toggleMusic));
+    self.musicCard = Card(self.view, 0x1a2637);
+    self.musicBody = [[UIScrollView alloc] init];
+    [self.musicCard addSubview:self.musicBody];
+    self.musicHeading = Label(self.musicBody, 13, @"HelveticaNeue-Medium", 0x9adfce);
+    self.musicHeading.text = @"MÚSICA";
+    self.musicSearchButton = Button(self.musicBody, @"♫  Pesquisar música", self, @selector(searchMusic));
+    self.musicToggleButton = Button(self.musicBody, @"Tocar", self, @selector(toggleMusic));
+    self.musicSummary = Label(self.musicBody, 14, @"HelveticaNeue-Medium", 0xe9f1ff);
+    self.musicSummary.numberOfLines = 2;
+    self.musicAddButton = Button(self.musicBody, @"+  Salvar link", self, @selector(addMusicLink));
+    self.savedMusic = [[[NSUserDefaults standardUserDefaults] arrayForKey:MusicLinksPreference] mutableCopy] ?: [NSMutableArray array];
+    self.musicLinks = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.musicLinks.backgroundColor = [UIColor clearColor];
+    self.musicLinks.separatorColor = Color(0x34465d);
+    self.musicLinks.rowHeight = 47;
+    self.musicLinks.tableFooterView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.musicLinks.delegate = self;
+    self.musicLinks.dataSource = self;
+    [self.musicBody addSubview:self.musicLinks];
+    self.musicEmpty = [[UILabel alloc] init];
+    self.musicEmpty.text = @"Salve um álbum ou playlist aqui.";
+    self.musicEmpty.textAlignment = NSTextAlignmentCenter;
+    self.musicEmpty.numberOfLines = 0;
+    self.musicEmpty.font = [UIFont systemFontOfSize:12];
+    self.musicEmpty.textColor = Color(0xaac1de);
+    self.musicLinks.backgroundView = self.musicEmpty;
+    self.musicEmpty.hidden = self.savedMusic.count > 0;
     __weak HomePanel *musicPanel = self;
     self.music.didUpdate = ^{ [musicPanel updateMusicButtons]; };
     [self updateMusicButtons];
@@ -257,18 +301,23 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.settingsButton.frame = CGRectMake(width - padding - 96, buttonY, 96, 44);
     self.filterButton.frame = CGRectMake(width - padding - 274, buttonY, 168, 44);
 
-    CGFloat musicY = buttonY + 44 + gap;
-    CGFloat toggleWidth = self.music.canToggle ? 84 : 0;
-    CGFloat musicGap = self.music.canToggle ? 8 : 0;
-    self.musicSearchButton.frame = CGRectMake(padding, musicY, inner - toggleWidth - musicGap, 44);
-    self.musicToggleButton.frame = CGRectMake(width - padding - toggleWidth, musicY, toggleWidth, 44);
-    CGFloat top = musicY + 44 + gap;
+    CGFloat top = buttonY + 44 + gap;
     CGFloat available = height - top - padding;
     BOOL sideBySide = landscape || width >= 600;
-    CGFloat photoHeight = floor(available * (sideBySide ? 0.59 : 0.48));
-    self.photoCard.frame = CGRectMake(padding, top, inner, photoHeight);
-    CGFloat bottomY = top + photoHeight + gap;
-    CGFloat remainder = available - photoHeight - gap;
+    CGFloat topHeight = floor(available * (sideBySide ? 0.59 : 0.58));
+    if (sideBySide) {
+        CGFloat musicWidth = MIN(282, floor((inner - gap) * 0.35));
+        CGFloat photoWidth = inner - musicWidth - gap;
+        self.photoCard.frame = CGRectMake(padding, top, photoWidth, topHeight);
+        self.musicCard.frame = CGRectMake(padding + photoWidth + gap, top, musicWidth, topHeight);
+    } else {
+        CGFloat musicHeight = floor(topHeight * 0.53);
+        self.photoCard.frame = CGRectMake(padding, top, inner, topHeight - musicHeight - gap);
+        self.musicCard.frame = CGRectMake(padding, CGRectGetMaxY(self.photoCard.frame) + gap, inner, musicHeight);
+    }
+    [self layoutMusicCard];
+    CGFloat bottomY = top + topHeight + gap;
+    CGFloat remainder = available - topHeight - gap;
     if (sideBySide) {
         CGFloat calendarWidth = floor((inner - gap) * 0.47);
         self.agendaCard.frame = CGRectMake(padding, bottomY, calendarWidth, remainder);
@@ -314,6 +363,24 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 }
 
+- (void)layoutMusicCard
+{
+    CGFloat width = self.musicCard.bounds.size.width;
+    CGFloat height = self.musicCard.bounds.size.height;
+    CGFloat contentHeight = MAX(height, 228);
+    self.musicBody.frame = self.musicCard.bounds;
+    self.musicBody.contentSize = CGSizeMake(width, contentHeight);
+    self.musicBody.scrollEnabled = contentHeight > height;
+    CGFloat inset = 12;
+    self.musicHeading.frame = CGRectMake(inset, 8, width - 2 * inset, 20);
+    self.musicSearchButton.frame = CGRectMake(inset, 34, width - 2 * inset, 42);
+    CGFloat controlWidth = self.music.canToggle ? 64 : 0;
+    self.musicSummary.frame = CGRectMake(inset, 81, width - 2 * inset - controlWidth - (controlWidth ? 5 : 0), 42);
+    self.musicToggleButton.frame = CGRectMake(width - inset - controlWidth, 81, controlWidth, 42);
+    self.musicAddButton.frame = CGRectMake(inset, 129, width - 2 * inset, 42);
+    self.musicLinks.frame = CGRectMake(inset, 174, width - 2 * inset, contentHeight - 178);
+}
+
 - (void)searchMusic
 {
     [self presentViewController:[self.music searchController] animated:YES completion:nil];
@@ -323,10 +390,86 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)updateMusicButtons
 {
-    [self.musicSearchButton setTitle:[NSString stringWithFormat:@"♫  %@", self.music.summary] forState:UIControlStateNormal];
+    self.musicSummary.text = self.music.summary;
     [self.musicToggleButton setTitle:(self.music.playing ? @"Pausar" : @"Tocar") forState:UIControlStateNormal];
     self.musicToggleButton.hidden = !self.music.canToggle;
     [self.view setNeedsLayout];
+}
+
+- (void)addMusicLink
+{
+    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"Salvar álbum ou playlist"
+        message:@"Cole um link do Spotify, YouTube ou Apple Music. O atalho abre o serviço no iPad."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Nome do atalho"; }];
+    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Link de compartilhamento";
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [form addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *weakForm = form;
+    [form addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSArray *fields = weakForm.textFields;
+        if (fields.count != 2) return;
+        NSCharacterSet *spaces = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+        NSString *name = [[fields[0] text] stringByTrimmingCharactersInSet:spaces];
+        NSString *address = [[fields[1] text] stringByTrimmingCharactersInSet:spaces];
+        NSString *service = MusicLinkService([NSURL URLWithString:address]);
+        if (!service || address.length > 2000) {
+            [self message:@"Link de música" body:@"Cole um link HTTPS de compartilhamento de um dos serviços indicados."];
+            return;
+        }
+        [self.savedMusic insertObject:@{@"name":name.length ? name : service, @"url":address, @"service":service} atIndex:0];
+        [self saveMusicLinks];
+    }]];
+    [self presentViewController:form animated:YES completion:nil];
+}
+
+- (void)saveMusicLinks
+{
+    [[NSUserDefaults standardUserDefaults] setObject:self.savedMusic forKey:MusicLinksPreference];
+    self.musicEmpty.hidden = self.savedMusic.count > 0;
+    [self.musicLinks reloadData];
+}
+
+- (NSInteger)tableView:(__unused UITableView *)table numberOfRowsInSection:(__unused NSInteger)section
+{
+    return self.savedMusic.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)path
+{
+    UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"SavedMusic"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"SavedMusic"];
+        cell.backgroundColor = [UIColor clearColor];
+        cell.textLabel.textColor = Color(0xe9f1ff);
+        cell.textLabel.font = [UIFont boldSystemFontOfSize:13];
+        cell.detailTextLabel.textColor = Color(0xaac1de);
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    NSDictionary *link = self.savedMusic[path.row];
+    cell.textLabel.text = link[@"name"];
+    cell.detailTextLabel.text = link[@"service"];
+    return cell;
+}
+
+- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path
+{
+    [table deselectRowAtIndexPath:path animated:YES];
+    NSURL *url = [NSURL URLWithString:self.savedMusic[path.row][@"url"]];
+    if (MusicLinkService(url)) [[UIApplication sharedApplication] openURL:url];
+}
+
+- (void)tableView:(__unused UITableView *)table commitEditingStyle:(UITableViewCellEditingStyle)style
+    forRowAtIndexPath:(NSIndexPath *)path
+{
+    if (style != UITableViewCellEditingStyleDelete) return;
+    [self.savedMusic removeObjectAtIndex:path.row];
+    [self saveMusicLinks];
 }
 
 - (void)updateClock

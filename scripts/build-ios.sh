@@ -37,7 +37,7 @@ for source in app/main.m app/Weather.m app/DrivePhotos.m app/Music.m; do
     "$clang" "${flags[@]}" -fobjc-arc -fblocks -c "$source" -o "$object"
     objects+=("$object")
 done
-"$clang" "${flags[@]}" "${objects[@]}" -framework UIKit -framework Foundation -framework EventKit -framework AVFoundation \
+"$clang" "${flags[@]}" "${objects[@]}" -framework UIKit -framework Foundation -framework EventKit -framework AVFoundation -framework MediaPlayer -framework StoreKit \
     -framework QuartzCore -framework CoreGraphics -framework CoreLocation -framework CFNetwork -framework ImageIO -framework Security -lobjc -o "$app/DNSBlock"
 "$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
 "$ldid" -S "$app/DNSBlock"
