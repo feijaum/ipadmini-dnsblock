@@ -33,7 +33,7 @@ jobs:
             -o "$RUNNER_TEMP/ios-toolchain.tar.xz"
           tar -xJf "$RUNNER_TEMP/ios-toolchain.tar.xz" -C "$RUNNER_TEMP/ios-toolchain"
           curl --fail --silent --show-error --location --retry 3 \
-            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS10.3.sdk.tar.xz \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS9.3.sdk.tar.xz \
             -o "$RUNNER_TEMP/ios-sdk.tar.xz"
           tar -xJf "$RUNNER_TEMP/ios-sdk.tar.xz" -C "$RUNNER_TEMP/ios-sdk"
           bin="$RUNNER_TEMP/ios-toolchain/linux/iphone/bin"
@@ -41,8 +41,13 @@ jobs:
           test -x "$linker"
           test -x "$bin/clang"
           test -x "$bin/ldid"
-          sdk="$(find "$RUNNER_TEMP/ios-sdk" -type d -name iPhoneOS10.3.sdk -print -quit)"
+          sdk="$(find "$RUNNER_TEMP/ios-sdk" -type d -name iPhoneOS9.3.sdk -print -quit)"
           test -d "$sdk"
+          # The split Theos stub is missing an ARMv7 re-export. Use the
+          # complete device symbol stub from the matching 9.3 SDK.
+          curl --fail --silent --show-error --location --retry 3 \
+            https://raw.githubusercontent.com/mstg/iOS-full-sdk/9c6f907ff1a9dc7a2e6efbd11369d9c1a2cf306e/iPhoneOS9.3.sdk/usr/lib/libSystem.tbd \
+            -o "$sdk/usr/lib/libSystem.tbd"
           printf '%s\n' "$bin" >> "$GITHUB_PATH"
           {
             printf 'IOS_CLANG=%s\n' "$bin/clang"
