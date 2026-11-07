@@ -1,4 +1,5 @@
 #import "Music.h"
+#import "YouTube.h"
 #import <AVFoundation/AVFoundation.h>
 #import <Security/Security.h>
 
@@ -8,7 +9,8 @@ static const NSUInteger MaxTrackBytes = 32 * 1024 * 1024;
 static BOOL AllowedMusicHost(NSString *host)
 {
     return [host hasSuffix:@".audius.co"] ||
-        [host hasSuffix:@".r2.cloudflarestorage.com"];
+        [host hasSuffix:@".r2.cloudflarestorage.com"] ||
+        [host isEqualToString:@"www.googleapis.com"] || [host isEqualToString:@"i.ytimg.com"];
 }
 
 static BOOL AllowedMusicURL(NSURL *url)
@@ -81,10 +83,11 @@ static NSArray *BrazilianStations(void)
 }
 
 - (void)URLSession:(__unused NSURLSession *)session task:(__unused NSURLSessionTask *)task
-    willPerformHTTPRedirection:(__unused NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
+    willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
     completionHandler:(void (^)(NSURLRequest *))completion
 {
-    completion(AllowedMusicURL(request.URL) ? request : nil);
+    BOOL fromSearchAPI = [response.URL.host isEqualToString:@"www.googleapis.com"];
+    completion(!fromSearchAPI && AllowedMusicURL(request.URL) ? request : nil);
 }
 
 - (void)URLSession:(__unused NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)task
@@ -310,6 +313,11 @@ totalBytesExpectedToWrite:(int64_t)expected
     return navigation;
 }
 
+- (UIViewController *)youtubeControllerWithSelection:(void (^)(NSURL *))selection
+{
+    return CentralYouTubeSearch(self.session, selection);
+}
+
 - (BOOL)canToggle { return self.audio != nil || self.radio != nil; }
 - (BOOL)isPlaying { return self.radio ? self.radioRequested : self.audio.isPlaying; }
 
@@ -327,6 +335,17 @@ totalBytesExpectedToWrite:(int64_t)expected
     self.audio = nil;
     if (self.audioFile) [[NSFileManager defaultManager] removeItemAtURL:self.audioFile error:NULL];
     self.audioFile = nil;
+}
+
+- (void)stopPlayback
+{
+    ++self.generation;
+    [self.download cancel];
+    self.download = nil;
+    [self clearAudio];
+    self.trackTitle = nil;
+    self.summary = @"Escolha uma faixa";
+    if (self.didUpdate) self.didUpdate();
 }
 
 - (void)playTrack:(NSDictionary *)track

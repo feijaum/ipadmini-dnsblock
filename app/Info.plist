@@ -9,8 +9,8 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Central da Casa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.4.5</string>
-    <key>CFBundleVersion</key><string>12</string>
+    <key>CFBundleShortVersionString</key><string>0.4.6</string>
+    <key>CFBundleVersion</key><string>13</string>
     <!-- Allow custom certificate validation for these hosts only. Requests still use HTTPS. -->
     <key>NSAppTransportSecurity</key>
     <dict>
@@ -22,6 +22,12 @@
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict>
         <key>script.googleusercontent.com</key><dict>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict>
+        <key>www.googleapis.com</key><dict>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict>
+        <key>i.ytimg.com</key><dict>
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict>
         <key>audius.co</key><dict>

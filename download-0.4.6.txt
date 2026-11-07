@@ -1,0 +1,1 @@
+https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.4.6-ios.1/dnsblock-central-0.4.6.deb

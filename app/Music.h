@@ -6,5 +6,7 @@
 @property(nonatomic, readonly, getter=isPlaying) BOOL playing;
 @property(nonatomic, copy) void (^didUpdate)(void);
 - (UIViewController *)searchController;
+- (UIViewController *)youtubeControllerWithSelection:(void (^)(NSURL *))selection;
+- (void)stopPlayback;
 - (void)togglePlayback;
 @end
