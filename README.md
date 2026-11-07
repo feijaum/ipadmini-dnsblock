@@ -69,6 +69,25 @@ Este passo a passo usa um iPad mini de 1ª geração com iOS 9.3.5 e jailbreak C
 
 ### 4. Teste com um único aparelho
 
+#### Pelo Android
+
+Com o Android no mesmo Wi-Fi do iPad, instale o [Termux pelo F-Droid](https://f-droid.org/en/packages/com.termux/) e abra o terminal. Instale o pacote de consultas DNS:
+
+```sh
+pkg install dnsutils
+```
+
+Substitua `192.168.1.50` pelo endereço mostrado no painel do iPad:
+
+```sh
+dig +time=3 +tries=1 @192.168.1.50 example.org
+dig +time=3 +tries=1 @192.168.1.50 doubleclick.net
+```
+
+O primeiro deve mostrar `status: NOERROR` e um endereço na seção `ANSWER`. Com o bloqueio ligado, o segundo deve mostrar `status: NXDOMAIN`. Os comandos consultam o iPad diretamente e não alteram o DNS do celular. Repita com a tela do iPad bloqueada para testar se ele continua respondendo.
+
+#### Pelo computador
+
 Primeiro, num computador na mesma rede, troque `IP_DO_IPAD` pelo endereço mostrado no painel. Os comandos consultam o iPad diretamente, sem mudar a configuração de rede do computador.
 
 ```sh
