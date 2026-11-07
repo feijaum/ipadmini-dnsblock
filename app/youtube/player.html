@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="origin">
+<style>
+html, body { height: 100%; margin: 0; }
+body { background: #1a2637; color: #e9f1ff; font: 14px -apple-system, Helvetica, sans-serif; }
+.controls { display: flex; padding-bottom: 4px; }
+button { flex: 1; min-height: 44px; border: 0; border-radius: 8px; background: #314763;
+    color: #fff; font: inherit; }
+button + button { margin-left: 4px; }
+button:disabled { opacity: .5; }
+#status { min-height: 32px; margin: 0; font-size: 12px; }
+#video { display: block; width: 100%; height: calc(100% - 80px); min-height: 200px; border: 0; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button id="play" disabled>Tocar</button>
+  <button id="pause" disabled>Pausar</button>
+  <button id="stop" disabled>Parar</button>
+</div>
+<p id="status" role="status" aria-live="polite">Carregando o YouTube…</p>
+<iframe id="video" title="Player do YouTube" src="__EMBED_URL__" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+<script>
+(function () {
+    'use strict';
+    var video = document.getElementById('video');
+    var play = document.getElementById('play');
+    var pause = document.getElementById('pause');
+    var stop = document.getElementById('stop');
+    var status = document.getElementById('status');
+    var player;
+    var stopped = false;
+    var autoStart = __AUTOPLAY__;
+    var timer = setTimeout(controlsUnavailable, 15000);
+
+    function controlsUnavailable() {
+        clearTimeout(timer);
+        autoStart = false;
+        status.textContent = 'Controles indisponíveis. Se o vídeo aparecer, use o Play do YouTube.';
+    }
+
+    function onReady(event) {
+        clearTimeout(timer);
+        player = event.target;
+        play.disabled = pause.disabled = stop.disabled = false;
+        status.textContent = 'Pronto para tocar.';
+        if (autoStart) {
+            autoStart = false;
+            player.playVideo();
+        }
+    }
+
+    function onStateChange(event) {
+        switch (event.data) {
+        case 0:
+            if (!stopped) status.textContent = 'Reprodução concluída.';
+            break;
+        case 1:
+            stopped = false;
+            status.textContent = 'Tocando.';
+            break;
+        case 2:
+            status.textContent = stopped ? 'Parado.' : 'Pausado.';
+            break;
+        case 3:
+            if (!stopped) status.textContent = 'Carregando vídeo…';
+            break;
+        }
+    }
+
+    function onError(event) {
+        clearTimeout(timer);
+        autoStart = false;
+        if (event.data === 100 || event.data === 101 || event.data === 150) {
+            status.textContent = 'Vídeo indisponível neste player. Escolha outro resultado.';
+        } else if (event.data === 153) {
+            status.textContent = 'O YouTube recusou a identificação da Central (153).';
+        } else {
+            status.textContent = 'O YouTube não conseguiu reproduzir (' + event.data + ').';
+        }
+    }
+
+    play.onclick = function () {
+        if (stopped) player.seekTo(0, true);
+        stopped = false;
+        player.playVideo();
+    };
+    pause.onclick = function () {
+        player.pauseVideo();
+    };
+    stop.onclick = function () {
+        stopped = true;
+        player.stopVideo();
+        status.textContent = 'Parado.';
+    };
+
+    window.onYouTubeIframeAPIReady = function () {
+        player = new YT.Player(video.id, {
+            events: {
+                onReady: onReady,
+                onStateChange: onStateChange,
+                onError: onError,
+                onAutoplayBlocked: function () {
+                    status.textContent = 'Toque em Tocar ou no Play do vídeo.';
+                }
+            }
+        });
+    };
+    var api = document.createElement('script');
+    api.src = 'https://www.youtube.com/iframe_api';
+    api.onerror = controlsUnavailable;
+    document.head.appendChild(api);
+}());
+</script>
+</body>
+</html>

@@ -3,7 +3,6 @@
 #import "DrivePhotos.h"
 #import "Music.h"
 #import "YouTube.h"
-#import <WebKit/WebKit.h>
 #import <EventKit/EventKit.h>
 #import <arpa/inet.h>
 #import <errno.h>
@@ -390,7 +389,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     CGFloat width = self.musicCard.bounds.size.width;
     CGFloat height = self.musicCard.bounds.size.height;
     BOOL video = self.youtubeView != nil;
-    CGFloat contentHeight = MAX(height, video ? 286 : 228);
+    CGFloat contentHeight = MAX(height, video ? 366 : 228);
     self.musicBody.frame = self.musicCard.bounds;
     self.musicBody.contentSize = CGSizeMake(width, contentHeight);
     self.musicBody.scrollEnabled = contentHeight > height;
@@ -431,17 +430,14 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     [self closeYouTube];
     [self.music stopPlayback];
-    WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
-    configuration.allowsInlineMediaPlayback = YES;
-    configuration.mediaPlaybackRequiresUserAction = YES;
-    self.youtubeView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
+    self.youtubeView = CentralYouTubePlayer();
     [self.musicBody addSubview:self.youtubeView];
     [self.musicBody setContentOffset:CGPointZero animated:NO];
     [self layoutMusicCard];
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-    NSString *referer = [@"https://" stringByAppendingString:[[NSBundle mainBundle].bundleIdentifier lowercaseString]];
-    [request setValue:referer forHTTPHeaderField:@"Referer"];
-    [self.youtubeView loadRequest:request];
+    // Leave autoplay to the user's tap when most of the player is below the fold.
+    CGFloat visibleVideo = self.musicCard.bounds.size.height - CGRectGetMinY(self.youtubeView.frame) - 80;
+    CGFloat videoHeight = self.youtubeView.bounds.size.height - 80;
+    CentralYouTubeLoadPlayer(self.youtubeView, url, visibleVideo > videoHeight / 2);
 }
 
 - (void)closeYouTube

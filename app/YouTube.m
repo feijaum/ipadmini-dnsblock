@@ -47,6 +47,39 @@ NSURL *CentralYouTubeEmbedURL(NSURL *link)
     return EmbedURL(video, playlist);
 }
 
+WKWebView *CentralYouTubePlayer(void)
+{
+    WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
+    configuration.allowsInlineMediaPlayback = YES;
+    configuration.mediaPlaybackRequiresUserAction = NO;
+    WKWebView *view = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
+    view.scrollView.scrollEnabled = NO;
+    return view;
+}
+
+void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
+{
+    NSURL *resource = [[NSBundle mainBundle] URLForResource:@"youtube-player" withExtension:@"html"];
+    NSString *html = resource ? [NSString stringWithContentsOfURL:resource encoding:NSUTF8StringEncoding error:NULL] : nil;
+    if (!html) {
+        [view loadHTMLString:@"<meta charset='utf-8'><p>Não foi possível abrir o player do YouTube.</p>" baseURL:nil];
+        return;
+    }
+
+    // The base URL supplies the app identity as the iframe's HTTP Referer.
+    NSString *origin = [@"https://" stringByAppendingString:[[NSBundle mainBundle].bundleIdentifier lowercaseString]];
+    NSURLComponents *embed = [NSURLComponents componentsWithURL:embedURL resolvingAgainstBaseURL:NO];
+    embed.queryItems = [embed.queryItems arrayByAddingObjectsFromArray:@[
+        [NSURLQueryItem queryItemWithName:@"enablejsapi" value:@"1"],
+        [NSURLQueryItem queryItemWithName:@"origin" value:origin]
+    ]];
+    NSString *source = [embed.URL.absoluteString stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
+    source = [source stringByReplacingOccurrencesOfString:@"\"" withString:@"&quot;"];
+    html = [html stringByReplacingOccurrencesOfString:@"__AUTOPLAY__" withString:autoplay ? @"true" : @"false"];
+    html = [html stringByReplacingOccurrencesOfString:@"__EMBED_URL__" withString:source];
+    [view loadHTMLString:html baseURL:[NSURL URLWithString:origin]];
+}
+
 @interface YouTubeSearch : UITableViewController <UISearchBarDelegate>
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSURLSessionDataTask *task;
@@ -102,7 +135,7 @@ NSURL *CentralYouTubeEmbedURL(NSURL *link)
 
 - (void)showPrompt
 {
-    self.message.text = self.key.length ? @"Digite um nome e toque em Buscar." :
+    self.message.text = self.key.length ? @"Digite um nome, toque em Buscar e escolha o resultado para tocar." :
         @"Toque em Link para abrir um vídeo ou playlist.\nPara buscar pelo nome, configure a chave em Chave.";
 }
 
@@ -208,7 +241,10 @@ NSURL *CentralYouTubeEmbedURL(NSURL *link)
         [NSURLQueryItem queryItemWithName:@"relevanceLanguage" value:@"pt"],
         [NSURLQueryItem queryItemWithName:@"maxResults" value:@"20"]
     ]];
-    if (!playlists) [parameters addObject:[NSURLQueryItem queryItemWithName:@"videoEmbeddable" value:@"true"]];
+    if (!playlists) {
+        [parameters addObject:[NSURLQueryItem queryItemWithName:@"videoEmbeddable" value:@"true"]];
+        [parameters addObject:[NSURLQueryItem queryItemWithName:@"videoSyndicated" value:@"true"]];
+    }
     endpoint.queryItems = parameters;
     endpoint.percentEncodedQuery = [endpoint.percentEncodedQuery stringByReplacingOccurrencesOfString:@"+" withString:@"%2B"];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:endpoint.URL

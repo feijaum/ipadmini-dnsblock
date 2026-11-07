@@ -43,6 +43,7 @@ done
 "$ldid" -S "$app/DNSBlock"
 
 install -m 644 app/Info.plist app/Icon-*.png app/ISRG-Root-*.der app/GTS-Root-*.der "$app/"
+install -m 644 app/youtube/player.html "$app/youtube-player.html"
 python3 - "$app/Info.plist" "$min_version" <<'PLIST'
 import plistlib
 import sys
