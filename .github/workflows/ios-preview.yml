@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Testar o serviço no Linux
+        run: make test
       - name: Instalar toolchain e SDK legado
         shell: bash
         run: |
@@ -52,7 +54,6 @@ jobs:
       - name: Compilar e verificar os pacotes
         shell: bash
         run: |
-          make test
           make ios
           python3 scripts/verify-ios-armv7.py dist/*.ipa dist/*.deb
           (cd dist && sha256sum *.ipa *.deb > SHA256SUMS.txt)
