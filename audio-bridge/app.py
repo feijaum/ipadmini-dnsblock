@@ -1,5 +1,6 @@
 """Experimental personal-use audio bridge. Never expose without a token."""
 import asyncio
+import base64
 import os
 import secrets
 import tempfile
@@ -36,6 +37,24 @@ def download(vid: str, folder: str) -> Path:
         "socket_timeout": 20,
         "retries": 2,
     }
+    # Optional private Netscape cookie file, supplied through Render secrets.
+    # Never commit cookies or print their values.
+    encoded = os.getenv("YOUTUBE_COOKIES_B64", "").strip()
+    cookie_path = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
+    if encoded:
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+            if len(raw) > 256 * 1024 or not raw.startswith(b"# Netscape HTTP Cookie File"):
+                raise ValueError("Invalid cookies.txt format")
+            cookie_path = str(Path(folder) / "cookies.txt")
+            Path(cookie_path).write_bytes(raw)
+            os.chmod(cookie_path, 0o600)
+        except Exception as exc:
+            raise ValueError("Invalid YOUTUBE_COOKIES_B64 configuration") from exc
+    if cookie_path:
+        if not Path(cookie_path).is_file():
+            raise ValueError("Configured cookies file is unavailable")
+        opts["cookiefile"] = cookie_path
     opts['logger'] = logging.getLogger('yt_dlp')
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={vid}"])
