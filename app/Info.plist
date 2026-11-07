@@ -9,8 +9,8 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Central da Casa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.4.8</string>
-    <key>CFBundleVersion</key><string>15</string>
+    <key>CFBundleShortVersionString</key><string>0.4.9</string>
+    <key>CFBundleVersion</key><string>16</string>
     <!-- Allow custom certificate validation for these hosts only. Requests still use HTTPS. -->
     <key>NSAppTransportSecurity</key>
     <dict>
@@ -25,6 +25,13 @@
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict>
         <key>www.googleapis.com</key><dict>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict>
+        <key>www.youtube.com</key><dict>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict>
+        <key>googlevideo.com</key><dict>
+            <key>NSIncludesSubdomains</key><true/>
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict>
         <key>i.ytimg.com</key><dict>

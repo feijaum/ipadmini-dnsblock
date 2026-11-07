@@ -1,4 +1,6 @@
-# Conversor de áudio da Central da Casa
+# Conversor de áudio da Central da Casa 0.4.8
+
+Este guia é da versão 0.4.8. A versão 0.4.9 resolve o áudio no iPad. Consulte o [guia da Central](../../README.md#youtube-na-central) para a versão atual.
 
 O iPad faz a busca pela YouTube Data API v3. Ao selecionar um resultado, envia o ID ao conversor na rede local. O yt-dlp baixa a faixa de áudio, o FFmpeg gera um MP3 e a Central o toca pelo player nativo. A conversão usa arquivos temporários, removidos após cada resposta. Use com faixas que você tem permissão para baixar e converter.
 

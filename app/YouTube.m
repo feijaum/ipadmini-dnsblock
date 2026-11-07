@@ -1,9 +1,6 @@
 #import "YouTube.h"
-#import <arpa/inet.h>
 
 static NSString *const KeyPreference = @"youtubeDataAPIKey";
-static NSString *const ServerPreference = @"youtubeAudioServer";
-static NSString *const TokenPreference = @"youtubeAudioToken";
 
 static BOOL ValidIdentifier(NSString *value, NSUInteger min, NSUInteger max)
 {
@@ -46,35 +43,104 @@ NSURL *CentralYouTubeWatchURL(NSURL *link)
     return WatchURL(video, playlist);
 }
 
-static NSURLComponents *LocalAudioServer(NSString *address)
+BOOL CentralYouTubeMediaHost(NSString *host)
 {
-    if (!address.length) return nil;
-    NSURLComponents *url = [NSURLComponents componentsWithString:address];
-    struct in_addr ip;
-    if (![url.scheme isEqualToString:@"http"] || !url.host ||
-        inet_pton(AF_INET, url.host.UTF8String, &ip) != 1 ||
-        url.user || url.password || url.query || url.fragment ||
-        (url.path.length && ![url.path isEqualToString:@"/"]) ||
-        (url.port && (url.port.integerValue < 1 || url.port.integerValue > 65535))) return nil;
-    uint32_t host = ntohl(ip.s_addr);
-    BOOL private = (host >> 24) == 10 || (host >> 20) == 0xac1 || (host >> 16) == 0xc0a8;
-    return private ? url : nil;
+    return [host hasSuffix:@".googlevideo.com"] || [host isEqualToString:@"googlevideo.com"];
 }
 
-NSURLRequest *CentralYouTubeAudioRequest(NSString *route, NSString *identifier)
+NSURLRequest *CentralYouTubePlayerRequest(NSString *video)
 {
-    BOOL playlist = [route isEqualToString:@"playlist"];
-    if (!(playlist || [route isEqualToString:@"audio"]) ||
-        !ValidIdentifier(identifier, playlist ? 2 : 11, playlist ? 150 : 11)) return nil;
-    NSUserDefaults *settings = [NSUserDefaults standardUserDefaults];
-    NSURLComponents *url = LocalAudioServer([settings stringForKey:ServerPreference]);
-    NSString *token = [settings stringForKey:TokenPreference];
-    if (!url || !ValidIdentifier(token, 32, 128)) return nil;
-    url.path = [NSString stringWithFormat:@"/%@/%@", route, identifier];
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url.URL
-        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:105];
-    [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+    if (!ValidIdentifier(video, 11, 11)) return nil;
+    NSString *version = @"21.08.3";
+    NSURL *url = [NSURL URLWithString:@"https://www.youtube.com/youtubei/v1/player?prettyPrint=false&noauth=1"];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:18];
+    request.HTTPMethod = @"POST";
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{
+        @"videoId":video, @"context":@{@"client":@{
+            @"clientName":@"IOS", @"clientVersion":version, @"hl":@"en", @"gl":@"BR"
+        }}
+    } options:0 error:NULL];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:@"5" forHTTPHeaderField:@"X-YouTube-Client-Name"];
+    [request setValue:version forHTTPHeaderField:@"X-YouTube-Client-Version"];
     return request;
+}
+
+static NSDictionary *ResponseDictionary(NSData *data)
+{
+    if (!data.length || data.length > 1024 * 1024) return nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    return [json isKindOfClass:[NSDictionary class]] ? json : nil;
+}
+
+NSURL *CentralYouTubeAudioURL(NSData *data)
+{
+    id streaming = ResponseDictionary(data)[@"streamingData"];
+    if (![streaming isKindOfClass:[NSDictionary class]]) return nil;
+    id formats = streaming[@"adaptiveFormats"];
+    if (![formats isKindOfClass:[NSArray class]]) return nil;
+    NSURL *candidate = nil;
+    NSInteger bestRank = 0;
+    for (id format in formats) {
+        if (![format isKindOfClass:[NSDictionary class]]) continue;
+        NSString *mime = format[@"mimeType"];
+        if (![mime isKindOfClass:[NSString class]] || ![mime hasPrefix:@"audio/mp4"] ||
+            [mime rangeOfString:@"mp4a."].location == NSNotFound) continue;
+        NSString *address = format[@"url"];
+        NSURL *url = [address isKindOfClass:[NSString class]] ? [NSURL URLWithString:address] : nil;
+        if (![url.scheme isEqualToString:@"https"] || !CentralYouTubeMediaHost(url.host) ||
+            url.user || url.password || (url.port && url.port.integerValue != 443)) continue;
+        id track = format[@"audioTrack"];
+        BOOL preferred = ![track isKindOfClass:[NSDictionary class]] || [track[@"audioIsDefault"] isEqual:@YES];
+        NSInteger rank = (preferred ? 2 : 0) + ([mime rangeOfString:@"mp4a.40.2"].location != NSNotFound ? 2 : 1);
+        if (rank > bestRank) {
+            bestRank = rank;
+            candidate = url;
+        }
+    }
+    return candidate;
+}
+
+static NSURLRequest *DataAPIRequest(NSURLComponents *endpoint, NSString *key)
+{
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:endpoint.URL
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:20];
+    [request setValue:key forHTTPHeaderField:@"X-Goog-Api-Key"];
+    [request setValue:[[NSBundle mainBundle] bundleIdentifier] forHTTPHeaderField:@"X-Ios-Bundle-Identifier"];
+    return request;
+}
+
+NSURLRequest *CentralYouTubePlaylistRequest(NSString *playlist)
+{
+    NSString *key = [[NSUserDefaults standardUserDefaults] stringForKey:KeyPreference];
+    if (!key.length || !ValidIdentifier(playlist, 2, 150)) return nil;
+    NSURLComponents *endpoint = [NSURLComponents componentsWithString:@"https://www.googleapis.com/youtube/v3/playlistItems"];
+    endpoint.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"part" value:@"snippet,contentDetails"],
+        [NSURLQueryItem queryItemWithName:@"playlistId" value:playlist],
+        [NSURLQueryItem queryItemWithName:@"maxResults" value:@"50"],
+        [NSURLQueryItem queryItemWithName:@"fields" value:@"items(snippet/title,contentDetails/videoId)"]
+    ];
+    return DataAPIRequest(endpoint, key);
+}
+
+NSArray *CentralYouTubePlaylistItems(NSData *data)
+{
+    id items = ResponseDictionary(data)[@"items"];
+    if (![items isKindOfClass:[NSArray class]]) return @[];
+    NSMutableArray *tracks = [NSMutableArray array];
+    for (id item in items) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        id details = item[@"contentDetails"];
+        id snippet = item[@"snippet"];
+        id video = [details isKindOfClass:[NSDictionary class]] ? details[@"videoId"] : nil;
+        id title = [snippet isKindOfClass:[NSDictionary class]] ? snippet[@"title"] : nil;
+        if (!ValidIdentifier(video, 11, 11) || ![title isKindOfClass:[NSString class]]) continue;
+        [tracks addObject:@{@"id":video, @"title":title}];
+        if (tracks.count == 50) break;
+    }
+    return tracks;
 }
 
 @interface YouTubeSearch : UITableViewController <UISearchBarDelegate>
@@ -101,8 +167,7 @@ NSURLRequest *CentralYouTubeAudioRequest(NSString *route, NSString *identifier)
         style:UIBarButtonItemStyleDone target:self action:@selector(close)];
     self.navigationItem.leftBarButtonItems = @[
         [[UIBarButtonItem alloc] initWithTitle:@"Link" style:UIBarButtonItemStylePlain target:self action:@selector(enterLink)],
-        [[UIBarButtonItem alloc] initWithTitle:@"Chave" style:UIBarButtonItemStylePlain target:self action:@selector(configureKey)],
-        [[UIBarButtonItem alloc] initWithTitle:@"Servidor" style:UIBarButtonItemStylePlain target:self action:@selector(configureServer)]
+        [[UIBarButtonItem alloc] initWithTitle:@"Chave" style:UIBarButtonItemStylePlain target:self action:@selector(configureKey)]
     ];
     CGFloat width = self.tableView.bounds.size.width;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 92)];
@@ -133,8 +198,8 @@ NSURLRequest *CentralYouTubeAudioRequest(NSString *route, NSString *identifier)
 
 - (void)showPrompt
 {
-    self.message.text = self.key.length ? @"Digite um nome e escolha o resultado para ouvir. Configure o conversor em Servidor." :
-        @"Toque em Link para abrir um vídeo ou playlist.\nPara buscar pelo nome, configure a chave em Chave.";
+    self.message.text = self.key.length ? @"Digite um nome e escolha o resultado para ouvir." :
+        @"Toque em Link para ouvir uma faixa.\nPara pesquisar ou abrir playlists, configure a chave.";
 }
 
 - (void)close
@@ -147,12 +212,6 @@ NSURLRequest *CentralYouTubeAudioRequest(NSString *route, NSString *identifier)
 - (void)selectURL:(NSURL *)url title:(NSString *)title
 {
     if (!url) return;
-    NSUserDefaults *settings = [NSUserDefaults standardUserDefaults];
-    if (!LocalAudioServer([settings stringForKey:ServerPreference]) ||
-        !ValidIdentifier([settings stringForKey:TokenPreference], 32, 128)) {
-        [self configureServer];
-        return;
-    }
     self.generation++;
     [self.task cancel];
     void (^selection)(NSURL *, NSString *) = self.selection;
@@ -186,52 +245,10 @@ NSURLRequest *CentralYouTubeAudioRequest(NSString *route, NSString *identifier)
     [self presentViewController:form animated:YES completion:nil];
 }
 
-- (void)configureServer
-{
-    NSUserDefaults *settings = [NSUserDefaults standardUserDefaults];
-    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"Servidor de áudio"
-        message:@"Informe o endereço HTTP na rede de casa e o token CENTRAL_YOUTUBE_TOKEN do servidor."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"http://192.168.0.10:8787";
-        field.text = [settings stringForKey:ServerPreference];
-        field.keyboardType = UIKeyboardTypeURL;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"Token do servidor";
-        field.text = [settings stringForKey:TokenPreference];
-        field.secureTextEntry = YES;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    [form addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
-    __weak UIAlertController *weakForm = form;
-    [form addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        NSCharacterSet *spaces = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-        NSString *address = [weakForm.textFields.firstObject.text stringByTrimmingCharactersInSet:spaces];
-        NSString *token = [weakForm.textFields.lastObject.text stringByTrimmingCharactersInSet:spaces];
-        if (!LocalAudioServer(address) || !ValidIdentifier(token, 32, 128)) {
-            UIAlertController *invalid = [UIAlertController alertControllerWithTitle:@"Configuração inválida"
-                message:@"Use um endereço HTTP com IP privado e o token do servidor (32 a 128 caracteres)."
-                preferredStyle:UIAlertControllerStyleAlert];
-            [invalid addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [self presentViewController:invalid animated:YES completion:nil];
-            return;
-        }
-        [settings setObject:address forKey:ServerPreference];
-        [settings setObject:token forKey:TokenPreference];
-        NSIndexPath *row = self.tableView.indexPathForSelectedRow;
-        if (row) [self.tableView deselectRowAtIndexPath:row animated:YES];
-    }]];
-    [self presentViewController:form animated:YES completion:nil];
-}
-
 - (void)configureKey
 {
     UIAlertController *form = [UIAlertController alertControllerWithTitle:@"Chave do YouTube"
-        message:@"Cole sua chave da YouTube Data API v3. Para abrir por link, a chave é opcional."
+        message:@"Cole sua chave da YouTube Data API v3. A chave serve para buscar pelo nome e abrir playlists."
         preferredStyle:UIAlertControllerStyleAlert];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"Chave da API";
@@ -289,10 +306,7 @@ NSURLRequest *CentralYouTubeAudioRequest(NSString *route, NSString *identifier)
     ]];
     endpoint.queryItems = parameters;
     endpoint.percentEncodedQuery = [endpoint.percentEncodedQuery stringByReplacingOccurrencesOfString:@"+" withString:@"%2B"];
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:endpoint.URL
-        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:20];
-    [request setValue:key forHTTPHeaderField:@"X-Goog-Api-Key"];
-    [request setValue:[[NSBundle mainBundle] bundleIdentifier] forHTTPHeaderField:@"X-Ios-Bundle-Identifier"];
+    NSURLRequest *request = DataAPIRequest(endpoint, key);
     __weak YouTubeSearch *controller = self;
     self.task = [self.session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         BOOL received = !error && data.length && data.length < 1024 * 1024;
