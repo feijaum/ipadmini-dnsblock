@@ -9,8 +9,8 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Central da Casa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.4.4</string>
-    <key>CFBundleVersion</key><string>11</string>
+    <key>CFBundleShortVersionString</key><string>0.4.5</string>
+    <key>CFBundleVersion</key><string>12</string>
     <!-- Allow custom certificate validation for these hosts only. Requests still use HTTPS. -->
     <key>NSAppTransportSecurity</key>
     <dict>
@@ -24,9 +24,6 @@
         <key>script.googleusercontent.com</key><dict>
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict>
-        <key>itunes.apple.com</key><dict>
-            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
-        </dict>
         <key>audius.co</key><dict>
             <key>NSIncludesSubdomains</key><true/>
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
@@ -36,7 +33,7 @@
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict></dict>
     </dict>
-    <key>NSAppleMusicUsageDescription</key><string>Autoriza a Central da Casa a tocar as músicas que você escolher no Apple Music.</string>
+    <key>UIBackgroundModes</key><array><string>audio</string></array>
     <key>NSLocationWhenInUseUsageDescription</key><string>Usa sua localização aproximada para consultar o clima da região enquanto a Central estiver aberta.</string>
     <key>NSCalendarsUsageDescription</key><string>Mostra os compromissos do calendário que você escolher.</string>
     <key>NSPhotoLibraryUsageDescription</key><string>Adiciona ao carrossel as fotos que você selecionar.</string>

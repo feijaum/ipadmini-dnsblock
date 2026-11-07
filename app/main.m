@@ -116,6 +116,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UIView *agendaCard;
 @property(nonatomic, strong) UIView *photoCard;
 @property(nonatomic, strong) UILabel *brand;
+@property(nonatomic, strong) UILabel *battery;
 @property(nonatomic, strong) UILabel *clock;
 @property(nonatomic, strong) UILabel *date;
 @property(nonatomic, strong) UILabel *weatherLabel;
@@ -174,6 +175,14 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.view.backgroundColor = Color(0x101722);
     self.brand = Label(self.view, 14, @"HelveticaNeue-Medium", 0xaac1de);
     self.brand.text = @"CENTRAL DA CASA";
+    self.brand.adjustsFontSizeToFitWidth = YES;
+    self.battery = Label(self.view, 13, @"HelveticaNeue-Medium", 0xe9f1ff);
+    self.battery.textAlignment = NSTextAlignmentCenter;
+    self.battery.backgroundColor = Color(0x24354a);
+    self.battery.layer.cornerRadius = 9;
+    self.battery.clipsToBounds = YES;
+    [UIDevice currentDevice].batteryMonitoringEnabled = YES;
+    [self updateBattery:nil];
     self.filterButton = Button(self.view, @"Bloqueio  ·  Consultando…", self, @selector(toggleFilter));
     self.filterButton.enabled = NO;
     self.settingsButton = Button(self.view, @"⚙  Ajustes", self, @selector(showSettings));
@@ -278,6 +287,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.photoIndex = NSNotFound;
 
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self selector:@selector(updateBattery:) name:UIDeviceBatteryLevelDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(updateBattery:) name:UIDeviceBatteryStateDidChangeNotification object:nil];
     [center addObserver:self selector:@selector(resume) name:UIApplicationDidBecomeActiveNotification object:nil];
     [center addObserver:self selector:@selector(pause) name:UIApplicationWillResignActiveNotification object:nil];
     [center addObserver:self selector:@selector(calendarChanged:) name:EKEventStoreChangedNotification object:self.eventStore];
@@ -297,7 +308,10 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     CGFloat inner = width - 2 * padding;
     BOOL compact = width < 500;
     CGFloat buttonY = compact ? padding + 28 : padding;
-    self.brand.frame = CGRectMake(padding, padding, compact ? inner : inner - 320, compact ? 22 : 44);
+    CGFloat batteryWidth = 86;
+    CGFloat batteryX = width - padding - batteryWidth - (compact ? 0 : 282);
+    self.battery.frame = CGRectMake(batteryX, padding + (compact ? 0 : 9), batteryWidth, compact ? 22 : 26);
+    self.brand.frame = CGRectMake(padding, padding, MAX(1, batteryX - padding - 8), compact ? 22 : 44);
     self.settingsButton.frame = CGRectMake(width - padding - 96, buttonY, 96, 44);
     self.filterButton.frame = CGRectMake(width - padding - 274, buttonY, 168, 44);
 
@@ -472,6 +486,18 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self saveMusicLinks];
 }
 
+- (void)updateBattery:(__unused NSNotification *)notification
+{
+    UIDevice *device = [UIDevice currentDevice];
+    float level = device.batteryLevel;
+    BOOL charging = device.batteryState == UIDeviceBatteryStateCharging || device.batteryState == UIDeviceBatteryStateFull;
+    self.battery.text = level < 0 ? @"Bat. —" :
+        [NSString stringWithFormat:@"%@ %.0f%%", charging ? @"⚡" : @"Bat.", level * 100];
+    self.battery.textColor = Color(charging ? 0x9adfce : (level >= 0 && level <= 0.2 ? 0xffc18c : 0xe9f1ff));
+    self.battery.accessibilityLabel = level < 0 ? @"Nível da bateria indisponível" :
+        [NSString stringWithFormat:@"Bateria %.0f por cento%@", level * 100, charging ? @", conectada à energia" : @""];
+}
+
 - (void)updateClock
 {
     NSDate *now = [NSDate date];
@@ -484,6 +510,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self.weather resume];
     [self.drivePhotos resume];
     [self updateMusicButtons];
+    [self updateBattery:nil];
     [self updateClock];
     [self refreshStatus];
     [self updateAgenda];
@@ -496,7 +523,6 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     [self.weather pause];
     [self.drivePhotos pause];
-    [self.music pause];
     [self.timer invalidate];
     self.timer = nil;
 }

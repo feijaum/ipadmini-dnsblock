@@ -7,5 +7,4 @@
 @property(nonatomic, copy) void (^didUpdate)(void);
 - (UIViewController *)searchController;
 - (void)togglePlayback;
-- (void)pause;
 @end

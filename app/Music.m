@@ -1,16 +1,13 @@
 #import "Music.h"
 #import <AVFoundation/AVFoundation.h>
-#import <MediaPlayer/MediaPlayer.h>
-#import <StoreKit/StoreKit.h>
 #import <Security/Security.h>
 
 static NSString *const MusicHost = @"api.audius.co";
-static NSString *const AppleSearchHost = @"itunes.apple.com";
 static const NSUInteger MaxTrackBytes = 32 * 1024 * 1024;
 
 static BOOL AllowedMusicHost(NSString *host)
 {
-    return [host isEqualToString:AppleSearchHost] || [host hasSuffix:@".audius.co"] ||
+    return [host hasSuffix:@".audius.co"] ||
         [host hasSuffix:@".r2.cloudflarestorage.com"];
 }
 
@@ -36,30 +33,16 @@ static NSURL *MusicURL(NSString *path, NSString *query)
     return url.URL;
 }
 
-static NSURL *AppleSearchURL(NSString *query)
+static NSArray *BrazilianStations(void)
 {
-    NSURLComponents *url = [[NSURLComponents alloc] init];
-    url.scheme = @"https";
-    url.host = AppleSearchHost;
-    url.path = @"/search";
-    url.queryItems = @[
-        [NSURLQueryItem queryItemWithName:@"term" value:query],
-        [NSURLQueryItem queryItemWithName:@"country" value:@"BR"],
-        [NSURLQueryItem queryItemWithName:@"media" value:@"music"],
-        [NSURLQueryItem queryItemWithName:@"entity" value:@"song"],
-        [NSURLQueryItem queryItemWithName:@"limit" value:@"20"]
+    return @[
+        @{@"title":@"SoundPop Rap", @"artist":@"Rap nacional e internacional", @"radio":@"https://azura.ez1fm.com/listen/rap/radio.mp3"},
+        @{@"title":@"Hunter FM Pagode", @"artist":@"Pagode · ao vivo", @"radio":@"https://live.hunter.fm/pagode_low"},
+        @{@"title":@"Geração Samba e Pagode", @"artist":@"Samba e pagode · ao vivo", @"radio":@"https://stream.geracaoradios.com.br/listen/samba/radio"},
+        @{@"title":@"Hunter FM MPB", @"artist":@"MPB · ao vivo", @"radio":@"https://live.hunter.fm/mpb_low"},
+        @{@"title":@"Hunter FM Sertanejo", @"artist":@"Sertanejo · ao vivo", @"radio":@"https://live.hunter.fm/sertanejo_low"},
+        @{@"title":@"Hunter FM Tropical", @"artist":@"Música tropical · ao vivo", @"radio":@"https://live.hunter.fm/tropical_low"}
     ];
-    // Encode literal plus signs rather than treating them as spaces in the catalog query.
-    url.percentEncodedQuery = [url.percentEncodedQuery stringByReplacingOccurrencesOfString:@"+" withString:@"%2B"];
-    return url.URL;
-}
-
-static BOOL SupportsAppleMusic(void)
-{
-    NSOperatingSystemVersion version = {9, 3, 0};
-    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:version] &&
-        NSClassFromString(@"SKCloudServiceController") != Nil &&
-        [MPMusicPlayerController instancesRespondToSelector:@selector(setQueueWithStoreIDs:)];
 }
 
 @interface MusicTransport : NSObject <NSURLSessionDownloadDelegate>
@@ -138,16 +121,15 @@ totalBytesExpectedToWrite:(int64_t)expected
         initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)];
     CGFloat width = self.tableView.bounds.size.width;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 92)];
-    self.source = [[UISegmentedControl alloc] initWithItems:@[@"Apple Music BR", @"Audius"]];
+    self.source = [[UISegmentedControl alloc] initWithItems:@[@"Rádios BR", @"Audius"]];
     self.source.frame = CGRectMake(16, 5, width - 32, 30);
     self.source.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [self.source setEnabled:SupportsAppleMusic() forSegmentAtIndex:0];
-    self.source.selectedSegmentIndex = SupportsAppleMusic() ? 0 : 1;
+    self.source.selectedSegmentIndex = 0;
     [self.source addTarget:self action:@selector(sourceChanged) forControlEvents:UIControlEventValueChanged];
     [header addSubview:self.source];
     self.search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 36, width, 56)];
     self.search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    self.search.placeholder = @"Nome da música ou artista";
+    self.search.placeholder = @"Nome da rádio ou estilo";
     self.search.delegate = self;
     self.search.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.search.autocorrectionType = UITextAutocorrectionTypeNo;
@@ -159,14 +141,14 @@ totalBytesExpectedToWrite:(int64_t)expected
     self.message.textAlignment = NSTextAlignmentCenter;
     self.message.numberOfLines = 0;
     self.message.textColor = [UIColor darkGrayColor];
-    self.message.text = @"Digite um nome e toque em Buscar.";
     self.tableView.backgroundView = self.message;
+    [self showStations:@""];
 }
 
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
-    [self.search becomeFirstResponder];
+    if (self.source.selectedSegmentIndex == 1) [self.search becomeFirstResponder];
 }
 
 - (void)close
@@ -178,28 +160,64 @@ totalBytesExpectedToWrite:(int64_t)expected
 
 - (void)sourceChanged
 {
-    if (self.search.text.length) [self searchBarSearchButtonClicked:self.search];
+    [self.searchTask cancel];
+    self.searchGeneration++;
+    self.search.text = @"";
+    if (self.source.selectedSegmentIndex == 0) {
+        [self.search resignFirstResponder];
+        self.search.placeholder = @"Nome da rádio ou estilo";
+        [self showStations:@""];
+    } else {
+        self.search.placeholder = @"Nome da música ou artista";
+        self.tracks = nil;
+        self.message.text = @"Digite um nome e toque em Buscar.";
+        [self.tableView reloadData];
+        [self.search becomeFirstResponder];
+    }
+}
+
+- (void)showStations:(NSString *)query
+{
+    NSMutableArray *stations = [NSMutableArray array];
+    for (NSDictionary *station in BrazilianStations()) {
+        NSString *description = [NSString stringWithFormat:@"%@ %@", station[@"title"], station[@"artist"]];
+        if (!query.length || [description rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound) {
+            [stations addObject:station];
+        }
+    }
+    self.tracks = stations;
+    self.message.text = stations.count ? nil : @"Nenhuma rádio encontrada.";
+    [self.tableView reloadData];
+}
+
+- (void)searchBar:(__unused UISearchBar *)search textDidChange:(NSString *)text
+{
+    if (self.source.selectedSegmentIndex == 0) [self showStations:text];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)search
 {
     NSString *query = [search.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (self.source.selectedSegmentIndex == 0) {
+        [self showStations:query];
+        [search resignFirstResponder];
+        return;
+    }
     if (!query.length || query.length > 150) return;
     [search resignFirstResponder];
     [self.searchTask cancel];
     NSUInteger generation = ++self.searchGeneration;
     self.tracks = nil;
-    BOOL apple = self.source.selectedSegmentIndex == 0;
-    self.message.text = apple ? @"Buscando no catálogo brasileiro…" : @"Buscando no Audius…";
+    self.message.text = @"Buscando no Audius…";
     [self.tableView reloadData];
-    NSURL *url = apple ? AppleSearchURL(query) : MusicURL(@"/v1/tracks/search", query);
+    NSURL *url = MusicURL(@"/v1/tracks/search", query);
     __weak MusicSearch *controller = self;
     self.searchTask = [self.session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSMutableArray *tracks = [NSMutableArray array];
         BOOL success = !error && data.length && data.length <= 4 * 1024 * 1024
             && [response isKindOfClass:[NSHTTPURLResponse class]] && [(NSHTTPURLResponse *)response statusCode] == 200;
         id payload = success ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
-        id rows = [payload isKindOfClass:[NSDictionary class]] ? payload[apple ? @"results" : @"data"] : nil;
+        id rows = [payload isKindOfClass:[NSDictionary class]] ? payload[@"data"] : nil;
         if ([rows isKindOfClass:[NSArray class]]) {
             for (id item in rows) {
                 if (![item isKindOfClass:[NSDictionary class]]) continue;
@@ -207,21 +225,13 @@ totalBytesExpectedToWrite:(int64_t)expected
                 NSString *title = item[@"title"];
                 id user = item[@"user"];
                 NSString *artist = [user isKindOfClass:[NSDictionary class]] ? user[@"name"] : nil;
-                if (apple) {
-                    NSNumber *trackID = item[@"trackId"];
-                    if (![trackID isKindOfClass:[NSNumber class]] || trackID.longLongValue <= 0) continue;
-                    identifier = trackID.stringValue;
-                    title = item[@"trackName"];
-                    artist = item[@"artistName"];
-                } else if ([item[@"is_stream_gated"] isEqual:@YES] || [item[@"is_available"] isEqual:@NO]) {
-                    continue;
-                }
+                if ([item[@"is_stream_gated"] isEqual:@YES] || [item[@"is_available"] isEqual:@NO]) continue;
                 NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"];
                 if (![identifier isKindOfClass:[NSString class]] || !identifier.length || identifier.length > 32
                     || [identifier rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound
                     || ![title isKindOfClass:[NSString class]] || !title.length) continue;
-                [tracks addObject:@{@"id":identifier, @"title":title, @"apple":@(apple),
-                    @"artist":[artist isKindOfClass:[NSString class]] ? artist : (apple ? @"Apple Music" : @"Audius")}];
+                [tracks addObject:@{@"id":identifier, @"title":title,
+                    @"artist":[artist isKindOfClass:[NSString class]] ? artist : @"Audius"}];
                 if (tracks.count == 20) break;
             }
         }
@@ -265,10 +275,9 @@ totalBytesExpectedToWrite:(int64_t)expected
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSURLSessionDownloadTask *download;
 @property(nonatomic, strong) AVAudioPlayer *audio;
-@property(nonatomic, strong) MPMusicPlayerController *applePlayer;
-@property(nonatomic, strong) id cloudService;
-@property(nonatomic) BOOL usingApple;
-@property(nonatomic) BOOL waitingForApple;
+@property(nonatomic, strong) AVPlayer *radio;
+@property(nonatomic, strong) AVPlayerItem *radioItem;
+@property(nonatomic) BOOL radioRequested;
 @property(nonatomic, strong) NSURL *audioFile;
 @property(nonatomic, copy) NSString *trackTitle;
 @property(nonatomic) NSUInteger generation;
@@ -301,20 +310,19 @@ totalBytesExpectedToWrite:(int64_t)expected
     return navigation;
 }
 
-- (BOOL)canToggle { return self.audio != nil || (self.usingApple && !self.waitingForApple); }
-- (BOOL)isPlaying
-{
-    return self.usingApple ? self.applePlayer.playbackState == MPMusicPlaybackStatePlaying : self.audio.isPlaying;
-}
+- (BOOL)canToggle { return self.audio != nil || self.radio != nil; }
+- (BOOL)isPlaying { return self.radio ? self.radioRequested : self.audio.isPlaying; }
 
 - (void)clearAudio
 {
-    self.cloudService = nil;
-    if (self.usingApple) {
-        self.usingApple = NO;
-        self.waitingForApple = NO;
-        [self.applePlayer stop];
+    if (self.radioItem) {
+        [self.radioItem removeObserver:self forKeyPath:@"status"];
+        [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.radioItem];
     }
+    [self.radio pause];
+    self.radio = nil;
+    self.radioItem = nil;
+    self.radioRequested = NO;
     [self.audio stop];
     self.audio = nil;
     if (self.audioFile) [[NSFileManager defaultManager] removeItemAtURL:self.audioFile error:NULL];
@@ -331,9 +339,8 @@ totalBytesExpectedToWrite:(int64_t)expected
     self.summary = [NSString stringWithFormat:@"Carregando %@…", track[@"title"]];
     if (self.didUpdate) self.didUpdate();
 
-    if ([track[@"apple"] boolValue]) {
-        if (SupportsAppleMusic()) [self playAppleTrack:track[@"id"] generation:generation];
-        else [self appleUnavailable:@"Apple Music requer iOS 9.3"];
+    if (track[@"radio"]) {
+        [self playRadio:[NSURL URLWithString:track[@"radio"]] generation:generation];
         return;
     }
     NSURL *url = MusicURL([NSString stringWithFormat:@"/v1/tracks/%@/stream", track[@"id"]], nil);
@@ -377,94 +384,58 @@ totalBytesExpectedToWrite:(int64_t)expected
     [self.download resume];
 }
 
-- (void)appleUnavailable:(NSString *)message
+- (void)playRadio:(NSURL *)url generation:(NSUInteger)generation
 {
-    [self clearAudio];
-    self.summary = message;
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
+    [[AVAudioSession sharedInstance] setActive:YES error:NULL];
+    self.radioItem = [AVPlayerItem playerItemWithURL:url];
+    self.radio = [AVPlayer playerWithPlayerItem:self.radioItem];
+    self.radioRequested = YES;
+    [self.radioItem addObserver:self forKeyPath:@"status"
+        options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial context:NULL];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(radioFailed:)
+        name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.radioItem];
+    [self.radio play];
     if (self.didUpdate) self.didUpdate();
-}
-
-// The cross toolchain cannot link Clang's availability helper on ARMv7.
-// The only caller checks the OS, class and selector before using these APIs.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunguarded-availability"
-- (void)playAppleTrack:(NSString *)identifier generation:(NSUInteger)generation
-{
-    [SKCloudServiceController requestAuthorization:^(SKCloudServiceAuthorizationStatus status) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.generation != generation) return;
-            if (status != SKCloudServiceAuthorizationStatusAuthorized) {
-                [self appleUnavailable:@"Permita o acesso ao Apple Music nos Ajustes do iPad"];
-                return;
-            }
-            SKCloudServiceController *service = [[SKCloudServiceController alloc] init];
-            self.cloudService = service;
-            [service requestCapabilitiesWithCompletionHandler:^(SKCloudServiceCapability capabilities, NSError *error) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (self.generation != generation) return;
-                    self.cloudService = nil;
-                    if (error || !(capabilities & SKCloudServiceCapabilityMusicCatalogPlayback)) {
-                        [self appleUnavailable:@"Entre no app Música com uma assinatura ativa"];
-                        return;
-                    }
-                    if (!self.applePlayer) {
-                        self.applePlayer = [MPMusicPlayerController applicationMusicPlayer];
-                        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appleStateChanged:)
-                            name:MPMusicPlayerControllerPlaybackStateDidChangeNotification object:self.applePlayer];
-                        [self.applePlayer beginGeneratingPlaybackNotifications];
-                    }
-                    self.usingApple = YES;
-                    self.waitingForApple = YES;
-                    [self.applePlayer setQueueWithStoreIDs:@[identifier]];
-                    [self.applePlayer play];
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 18 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                        if (self.generation != generation || !self.waitingForApple) return;
-                        if (self.isPlaying) [self appleStateChanged:nil];
-                        else [self appleUnavailable:@"Apple Music indisponível neste iPad"];
-                    });
-                });
-            }];
-        });
-    }];
-}
-
-#pragma clang diagnostic pop
-
-- (void)appleStateChanged:(__unused NSNotification *)notification
-{
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self.usingApple) return;
-        if (self.isPlaying) {
-            self.waitingForApple = NO;
-            self.summary = self.trackTitle;
-        } else if (!self.waitingForApple && self.applePlayer.playbackState == MPMusicPlaybackStateStopped) {
-            self.usingApple = NO;
-            self.summary = @"Escolha uma faixa";
-        }
-        if (self.didUpdate) self.didUpdate();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (self.generation == generation && self.radioRequested &&
+            self.radioItem.status == AVPlayerItemStatusUnknown) [self radioFailed:nil];
     });
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+                        change:(NSDictionary *)change context:(void *)context
+{
+    if (![keyPath isEqualToString:@"status"]) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (object != self.radioItem) return;
+        if (self.radioItem.status == AVPlayerItemStatusFailed) [self radioFailed:nil];
+        else if (self.radioItem.status == AVPlayerItemStatusReadyToPlay) {
+            self.summary = self.trackTitle;
+            if (self.didUpdate) self.didUpdate();
+        }
+    });
+}
+
+- (void)radioFailed:(NSNotification *)notification
+{
+    if (!self.radioItem || (notification && notification.object != self.radioItem)) return;
+    [self clearAudio];
+    self.summary = @"Rádio indisponível · tente outra estação";
+    if (self.didUpdate) self.didUpdate();
 }
 
 - (void)togglePlayback
 {
-    if (self.usingApple) {
-        if (self.isPlaying) [self.applePlayer pause];
-        else [self.applePlayer play];
+    if (self.radio) {
+        self.radioRequested = !self.radioRequested;
+        if (self.radioRequested) [self.radio play];
+        else [self.radio pause];
     } else if (self.audio.isPlaying) [self.audio pause];
     else if (self.audio) [self.audio play];
-    if (self.didUpdate) self.didUpdate();
-}
-
-- (void)pause
-{
-    if (self.download) {
-        self.generation++;
-        [self.download cancel];
-        self.download = nil;
-        self.summary = @"Escolha uma faixa";
-    }
-    if (self.usingApple && self.isPlaying) [self.applePlayer pause];
-    if (self.audio.isPlaying) [self.audio pause];
     if (self.didUpdate) self.didUpdate();
 }
 
