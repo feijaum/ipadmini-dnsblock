@@ -3,8 +3,16 @@ set -eu
 service=/Library/LaunchDaemons/com.feijaum.ipadminidnsblock.plist
 if [ "${1:-}" = configure ]; then
     launchctl unload "$service" >/dev/null 2>&1 || true
-    launchctl load "$service"
-    if command -v uicache >/dev/null 2>&1; then
-        uicache >/dev/null 2>&1 || true
+    service_status=0
+    launchctl load "$service" || service_status=$?
+
+    # The iOS 9 icon cache belongs to mobile, while dpkg runs as root.
+    if uicache_path=$(command -v uicache); then
+        if ! su mobile -c "$uicache_path" && ! "$uicache_path"; then
+            echo "Central da Casa: falha ao atualizar os ícones. Execute uicache como mobile e faça um respring." >&2
+        fi
+    else
+        echo "Central da Casa: uicache ausente. Confira o pacote UIKit Tools no Cydia." >&2
     fi
+    exit "$service_status"
 fi
