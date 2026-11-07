@@ -32,17 +32,17 @@ fi
 # The iOS 8 runtime provides the ARC and Foundation features used here.
 # Pass ARC to compilation only, so Clang does not force-load libarclite.
 objects=()
-for source in app/main.m app/Weather.m; do
+for source in app/main.m app/Weather.m app/DrivePhotos.m; do
     object="$build/$(basename "$source" .m).o"
     "$clang" "${flags[@]}" -fobjc-arc -fblocks -c "$source" -o "$object"
     objects+=("$object")
 done
 "$clang" "${flags[@]}" "${objects[@]}" -framework UIKit -framework Foundation -framework EventKit \
-    -framework QuartzCore -framework CoreGraphics -framework CoreLocation -framework CFNetwork -framework Security -lobjc -o "$app/DNSBlock"
+    -framework QuartzCore -framework CoreGraphics -framework CoreLocation -framework CFNetwork -framework ImageIO -framework Security -lobjc -o "$app/DNSBlock"
 "$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
 "$ldid" -S "$app/DNSBlock"
 
-install -m 644 app/Info.plist app/Icon-*.png app/ISRG-Root-*.der "$app/"
+install -m 644 app/Info.plist app/Icon-*.png app/ISRG-Root-*.der app/GTS-Root-*.der "$app/"
 python3 - "$app/Info.plist" "$min_version" <<'PLIST'
 import plistlib
 import sys

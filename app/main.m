@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import "Weather.h"
+#import "DrivePhotos.h"
 #import <EventKit/EventKit.h>
 #import <arpa/inet.h>
 #import <errno.h>
@@ -106,6 +107,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UILabel *photoHeading;
 @property(nonatomic, strong) UILabel *photoHint;
 @property(nonatomic, strong) UIImageView *photo;
+@property(nonatomic, strong) DrivePhotos *drivePhotos;
 @property(nonatomic, strong) UIButton *filterButton;
 @property(nonatomic, strong) UIButton *settingsButton;
 @property(nonatomic, strong) NSDateFormatter *clockFormat;
@@ -175,6 +177,11 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.photoHint = Label(self.photoCard, 15, @"HelveticaNeue", 0xb5cce7);
     self.photoHint.text = @"Adicione fotos em Ajustes";
     self.photoHint.textAlignment = NSTextAlignmentCenter;
+    self.photoHint.numberOfLines = 2;
+    self.photoHint.adjustsFontSizeToFitWidth = YES;
+    self.drivePhotos = [[DrivePhotos alloc] init];
+    __weak HomePanel *panel = self;
+    self.drivePhotos.didUpdate = ^{ [panel nextPhoto]; };
 
     self.clockFormat = [self formatter:@"HH:mm"];
     self.dateFormat = [self formatter:@"EEEE, d 'de' MMMM"];
@@ -247,6 +254,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 - (void)resume
 {
     [self.weather resume];
+    [self.drivePhotos resume];
     [self updateClock];
     [self refreshStatus];
     [self updateAgenda];
@@ -258,6 +266,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 - (void)pause
 {
     [self.weather pause];
+    [self.drivePhotos pause];
     [self.timer invalidate];
     self.timer = nil;
 }
@@ -397,8 +406,9 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 - (void)nextPhoto
 {
     NSArray *photos = [[NSUserDefaults standardUserDefaults] arrayForKey:PhotosPreference];
-    self.photo.image = nil;
-    if (photos.count) {
+    self.photo.image = [self.drivePhotos nextImage];
+    self.photoHint.text = self.drivePhotos.connected ? self.drivePhotos.status : @"Adicione fotos em Ajustes";
+    if (!self.photo.image && photos.count) {
         self.photoIndex = self.photoIndex >= photos.count - 1 ? 0 : self.photoIndex + 1;
         self.photo.image = [UIImage imageWithContentsOfFile:[self photoPath:photos[self.photoIndex]]];
     }
@@ -483,13 +493,42 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self presentViewController:prompt animated:YES completion:nil];
 }
 
+- (void)connectDrivePhotos
+{
+    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"Fotos do Google Drive"
+        message:@"Cole o endereço /exec da sua implantação e a chave privada da pasta."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"https://script.google.com/…/exec";
+        field.text = self.drivePhotos.endpoint;
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Chave privada";
+        field.secureTextEntry = YES;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [form addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *weakForm = form;
+    [form addAction:[UIAlertAction actionWithTitle:@"Conectar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSArray *fields = weakForm.textFields;
+        if (fields.count == 2 && ![self.drivePhotos connectToURL:[fields[0] text] key:[fields[1] text]]) {
+            [self message:@"Fotos do Google Drive" body:@"Use a URL HTTPS da implantação terminada em /exec e uma chave de 24 a 128 caracteres. A chave aceita letras, números, hífen e sublinhado."];
+        }
+    }]];
+    [self presentViewController:form animated:YES completion:nil];
+}
+
 - (void)showSettings
 {
     NSString *detail = self.status ? [NSString stringWithFormat:
         @"DNS: %@\nIP: %@\nConsultas: %@  ·  Bloqueadas: %@\n\nAo desligar o filtro, o iPad continua respondendo como DNS.",
         self.serviceMessage, self.status[@"ip"], self.status[@"queries"], self.status[@"blocked"]]
         : @"Serviço DNS indisponível. Confira o Wi-Fi e se o jailbreak está ativo.";
-    detail = [detail stringByAppendingString:@"\n\nDados meteorológicos: Open-Meteo."];
+    detail = [detail stringByAppendingFormat:@"\n\n%@\nDados meteorológicos: Open-Meteo.", self.drivePhotos.status];
     UIAlertController *settings = [UIAlertController alertControllerWithTitle:@"Configurações" message:detail
         preferredStyle:UIAlertControllerStyleActionSheet];
     [settings addAction:[UIAlertAction actionWithTitle:@"Atualizar estado do DNS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -517,6 +556,18 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [settings addAction:[UIAlertAction actionWithTitle:@"Escolher calendário da família" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self chooseCalendar];
     }]];
+    if (self.drivePhotos.connected) {
+        [settings addAction:[UIAlertAction actionWithTitle:@"Atualizar fotos do Drive" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self.drivePhotos refresh];
+        }]];
+        [settings addAction:[UIAlertAction actionWithTitle:@"Desconectar Google Drive" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self.drivePhotos disconnect];
+        }]];
+    } else {
+        [settings addAction:[UIAlertAction actionWithTitle:@"Conectar fotos do Drive" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self connectDrivePhotos];
+        }]];
+    }
     [settings addAction:[UIAlertAction actionWithTitle:@"Adicionar foto da fototeca" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self addPhoto];
     }]];

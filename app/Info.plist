@@ -9,13 +9,19 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Central da Casa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3.2</string>
-    <key>CFBundleVersion</key><string>6</string>
-    <!-- Allow custom certificate validation for the weather host only. Requests still use HTTPS. -->
+    <key>CFBundleShortVersionString</key><string>0.4.0</string>
+    <key>CFBundleVersion</key><string>7</string>
+    <!-- Allow custom certificate validation for these hosts only. Requests still use HTTPS. -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSExceptionDomains</key>
         <dict><key>api.open-meteo.com</key><dict>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict>
+        <key>script.google.com</key><dict>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict>
+        <key>script.googleusercontent.com</key><dict>
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict></dict>
     </dict>
