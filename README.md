@@ -43,23 +43,51 @@ DEVELOPER_DIR=/Applications/Xcode-7.3.1.app/Contents/Developer make ios
 
 O script gera `dist/dnsblock-servico-0.1.0.deb` e `dist/dnsblock-painel-0.1.0.ipa`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
 
-## Instalação e primeiro teste
+## Instalação e configuração no iPad
 
-1. Com o jailbreak ativo, transfira o `.deb` e instale pelo gerenciador de pacotes ou, como root, com `dpkg -i dnsblock-servico-0.1.0.deb`.
-2. Instale o `.ipa` pelo seu instalador compatível com AppSync Unified. Abra **DNSBlock** e confira o IP do iPad e o estado **Conectado**.
-3. No computador conectado à mesma rede, substitua `IP_DO_IPAD` e verifique uma resolução permitida, um domínio bloqueado e uma consulta por TCP:
+Este passo a passo usa um iPad mini de 1ª geração com iOS 9.3.5 e jailbreak Carbon. Comece com o iPad e o aparelho que vai fazer o teste na mesma rede Wi-Fi.
 
-   ```sh
-   nslookup example.org IP_DO_IPAD
-   nslookup doubleclick.net IP_DO_IPAD
-   dig +tcp @IP_DO_IPAD example.org
-   ```
+### 1. Instale o que precisa no Cydia
 
-   Com o filtro ligado, a consulta de `doubleclick.net` deve retornar `NXDOMAIN`.
-4. Deixe o iPad no carregador, bloqueie a tela e repita os testes depois de alguns minutos e de algumas horas. Teste também reconectar ao Wi-Fi e reativar o jailbreak após reiniciar.
-5. Para usar na rede inteira, reserve o IP do iPad no roteador e configure a opção de **DNS da LAN/DHCP** para anunciá-lo aos clientes. Se o iPad for o único resolvedor anunciado e ficar offline, a resolução de nomes pode parar. Para desfazer, restaure o DNS anterior no roteador ou no cliente.
+1. Abra o **Cydia** com o Carbon ativo e deixe as fontes atualizarem. Se aparecer **Preparando sistema de arquivos** no primeiro uso, espere concluir.
+2. Em **Buscar**, procure **Filza File Manager** da fonte **BigBoss**. Toque em **Instalar → Confirmar**. No iPad mini 1, use o **Filza File Manager** compatível com iOS 9 e 32 bits, identificado como `com.tigisoftware.filza`. Se a fonte BigBoss não listar uma versão compatível, consulte a fonte oficial da TIGI em **Fontes → Editar → Adicionar** com `https://tigisoftware.com/repo/`. [Instruções da TIGI](https://www.tigisoftware.com/default/?p=439)
+3. Em **Instalado**, confira se **AppSync Unified** já aparece. Se aparecer, pode seguir. Se faltar, vá em **Fontes → Editar → Adicionar** e tente adicionar `https://cydia.akemi.ai/`. Procure **AppSync Unified**, de Karen/あけみ, e instale. Se a fonte falhar, baixe o [AppSync Unified oficial em `iphoneos-arm`](https://github.com/akemin-dayo/AppSync/releases/download/116.0/ai.akemi.appsyncunified_116.0_iphoneos-arm.akemi-git-235aca6cddfbdc9fa87fcb5b2aec2df37ed6d65a.deb), transfira pelo passo 2 abaixo e instale esse arquivo no Filza antes do painel. Se a instalação manual acusar falta de `mobilesubstrate`, instale **Cydia Substrate** pelo Cydia e tente de novo. [Código e documentação do AppSync](https://github.com/akemin-dayo/AppSync)
+4. Se o Cydia mostrar **Reiniciar SpringBoard**, confirme. No Carbon com iOS 9.3.5, o pacote **iocaste untether** é opcional para o primeiro teste. Ele faz o jailbreak voltar automaticamente após um reinício completo. Sem ele, rode o Carbon de novo depois de reiniciar. Se decidir instalá-lo, procure **iocaste untether** no Cydia e deixe a instalação terminar antes de sair do app. [Guia do Carbon](https://ios.cfw.guide/using-carbon/#untethering-9-3-5-9-3-6)
 
-### Ajustar o filtro
+### 2. Baixe e transfira os arquivos
+
+1. Abra a [página da prévia ARMv7](https://github.com/feijaum/ipadmini-dnsblock/releases/tag/v0.1.0-ios.1) e baixe **dnsblock-servico-0.1.0.deb** e **dnsblock-painel-0.1.0.ipa**. Enquanto o repositório for privado, use uma conta com acesso.
+2. Se o Safari do iPad oferecer **Abrir em… → Filza**, use essa opção. Se o Safari antigo falhar no login ou no download, baixe no Android ou no computador e faça a transferência pelo Wi-Fi.
+3. Para transferir pelo Wi-Fi, no iPad abra **Filza → Ajustes → Enable WebDAV server**. No outro aparelho, que deve estar na mesma rede, abra no navegador o endereço HTTP exibido pelo Filza. Use **Upload** para enviar os arquivos a uma pasta que você consiga localizar. Mantenha o Filza aberto enquanto envia e desligue o servidor WebDAV depois. [Guia do Filza](https://www.tigisoftware.com/default/?page_id=177#)
+
+### 3. Instale e abra o DNSBlock
+
+1. No Filza, abra **dnsblock-servico-0.1.0.deb**, toque em **Install** e espere terminar. O pacote configura o serviço para iniciar pelo `launchd`.
+2. Se precisar instalar o AppSync pelo arquivo manual, abra o **.deb do AppSync** no Filza antes de instalar o painel. Depois, abra **dnsblock-painel-0.1.0.ipa** e toque em **Install**.
+3. Na tela inicial, abra **DNSBlock**. Confira se aparece **Conectado**, se **Bloqueio** está ligado e anote o **IP para usar como DNS**. Use o botão de atualizar no canto superior para consultar o estado e os contadores.
+4. Se o painel mostrar **Serviço indisponível**, confirme que o jailbreak continua ativo, que o iPad tem um IPv4 no Wi-Fi e que a instalação do **serviço .deb** terminou com sucesso. Atualize o painel depois de reconectar à rede. Se um instalador mostrar erro, guarde a mensagem completa para diagnóstico.
+
+### 4. Teste com um único aparelho
+
+Primeiro, num computador na mesma rede, troque `IP_DO_IPAD` pelo endereço mostrado no painel. Os comandos consultam o iPad diretamente, sem mudar a configuração de rede do computador.
+
+```sh
+nslookup example.org IP_DO_IPAD
+nslookup doubleclick.net IP_DO_IPAD
+```
+
+Com o bloqueio ligado, `example.org` deve resolver e `doubleclick.net` deve retornar **NXDOMAIN**. Atualize o painel e confirme que os contadores aumentaram. Para verificar TCP, se tiver o `dig`, use `dig +tcp @IP_DO_IPAD example.org`. Repita as consultas com o iPad carregando e com a tela bloqueada, primeiro após alguns minutos e depois após algumas horas.
+
+Para navegar usando esse DNS no Windows, pressione **Win + R**, digite `ncpa.cpl`, abra **Propriedades** do adaptador Wi-Fi e depois **Protocolo IP Versão 4 (TCP/IPv4) → Propriedades**. Guarde a configuração anterior, selecione **Usar os seguintes endereços de servidor DNS** e informe o IP do iPad como **DNS preferencial**. Deixe o alternativo em branco durante o teste e preserve as configurações de endereço IP e gateway. Se o navegador usar DNS seguro próprio ou se houver outro resolvedor anunciado via IPv6, as consultas de navegação podem contornar o filtro. Para desfazer, restaure as configurações anteriores. [Configurações de rede do Windows](https://support.microsoft.com/en-gb/windows/experience/connectivity-networking/essential-network-settings-and-tasks-in-windows)
+
+### 5. Configure a rede inteira depois do teste
+
+1. No roteador, faça uma **reserva DHCP** para o iPad, para que ele continue recebendo o mesmo IP.
+2. Na seção **LAN/DHCP**, guarde os valores anteriores e configure o DNS entregue aos clientes com o IP reservado do iPad. A opção de DNS de **WAN/Internet** pode ser separada. Se o roteador não oferecer DNS para clientes da LAN, mantenha a configuração manual por aparelho.
+3. Reconecte um cliente ao Wi-Fi para renovar a configuração e verifique no painel se há novas consultas. Um resolvedor público como DNS alternativo ou um DNS IPv6 anunciado pelo roteador pode fazer parte das consultas escapar do filtro.
+4. Se o iPad ficar offline e for o único DNS anunciado, a resolução de nomes pode parar. Para desfazer, restaure o DNS anterior no roteador e reconecte os clientes.
+
+## Ajustes avançados do filtro
 
 - Edite `/etc/ipadmini-dnsblock/blocklist.txt` com um domínio por linha. Um domínio inclui seus subdomínios. Aceita comentários com `#`.
 - O arquivo `/etc/ipadmini-dnsblock/upstream` recebe um IPv4 na primeira linha. O padrão é `9.9.9.9`. Escolha um servidor alcançável pelo iPad na porta 53 que não encaminhe de volta para ele.
