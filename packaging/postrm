@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+if [ "${1:-}" = purge ]; then
+    rm -f /var/mobile/Library/Preferences/com.feijaum.ipadminidnsblock.enabled
+fi

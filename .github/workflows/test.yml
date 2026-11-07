@@ -1,0 +1,13 @@
+name: Testes do serviço
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  dns:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test

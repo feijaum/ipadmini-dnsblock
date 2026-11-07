@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.feijaum.ipadminidnsblock</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/libexec/ipadmini-dnsblock</string>
+        <string>en0</string>
+        <string>53</string>
+        <string>8753</string>
+        <string>@/etc/ipadmini-dnsblock/upstream</string>
+        <string>53</string>
+        <string>/etc/ipadmini-dnsblock/blocklist.txt</string>
+        <string>/var/mobile/Library/Preferences/com.feijaum.ipadminidnsblock.enabled</string>
+        <string>mobile</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>15</integer>
+</dict>
+</plist>

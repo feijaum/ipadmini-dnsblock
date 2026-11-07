@@ -1,0 +1,9 @@
+Package: com.feijaum.ipadminidnsblock
+Name: DNSBlock Legacy (serviço)
+Version: 0.1.0
+Architecture: iphoneos-arm
+Maintainer: feijaum
+Section: Networking
+Depends: firmware (>= 8.0), firmware (<< 11.0)
+Description: Serviço de DNS local com bloqueio de domínios para iOS legado com jailbreak.
+Homepage: https://github.com/feijaum/ipadmini-dnsblock

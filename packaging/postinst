@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+service=/Library/LaunchDaemons/com.feijaum.ipadminidnsblock.plist
+if [ "${1:-}" = configure ]; then
+    launchctl unload "$service" >/dev/null 2>&1 || true
+    launchctl load "$service"
+fi

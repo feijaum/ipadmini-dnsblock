@@ -1,0 +1,17 @@
+# Um domínio por linha. Cada entrada também bloqueia seus subdomínios.
+adnxs.com
+adservice.google.com
+adsrvr.org
+adtechus.com
+amazon-adsystem.com
+criteo.com
+criteo.net
+doubleclick.net
+googleadservices.com
+googlesyndication.com
+moatads.com
+openx.net
+pubmatic.com
+rubiconproject.com
+scorecardresearch.com
+taboola.com

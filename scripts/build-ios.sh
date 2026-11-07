@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+archs="${IOS_ARCHS:-armv7}"
+sdk="${IOS_SDK:-$(xcrun --sdk iphoneos --show-sdk-path)}"
+min_version="${IOS_MIN_VERSION:-8.0}"
+clang="${IOS_CLANG:-$(xcrun --sdk iphoneos --find clang)}"
+ldid="${LDID:-ldid}"
+version="$(awk '/^Version:/ {print $2}' packaging/control)"
+for tool in "$clang" "$ldid" dpkg-deb zip; do
+    command -v "$tool" >/dev/null || { echo "Ferramenta ausente: $tool" >&2; exit 1; }
+done
+[[ -d "$sdk" ]] || { echo "SDK do iOS não encontrado: $sdk" >&2; exit 1; }
+
+build="$(mktemp -d)"
+trap 'rm -rf "$build"' EXIT
+package="$build/deb"
+app="$build/Payload/DNSBlock.app"
+mkdir -p "$package"/{DEBIAN,usr/libexec,Library/LaunchDaemons,etc/ipadmini-dnsblock} "$app" dist
+
+arch_flags=()
+for arch in $archs; do
+    case "$arch" in armv7|arm64) arch_flags+=(-arch "$arch");; *) exit 1;; esac
+done
+flags=("${arch_flags[@]}" -isysroot "$sdk" "-miphoneos-version-min=$min_version" -O2 -Wall -Wextra)
+"$clang" "${flags[@]}" -std=c99 -pthread src/dnsblock.c -o "$package/usr/libexec/ipadmini-dnsblock"
+"$clang" "${flags[@]}" -fobjc-arc -fblocks -framework UIKit -framework Foundation app/main.m -o "$app/DNSBlock"
+"$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
+"$ldid" -S "$app/DNSBlock"
+
+install -m 644 app/Info.plist "$app/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $min_version" "$app/Info.plist"
+install -m 644 packaging/com.feijaum.ipadminidnsblock.plist "$package/Library/LaunchDaemons/"
+install -m 644 config/{blocklist.txt,upstream} "$package/etc/ipadmini-dnsblock/"
+install -m 644 packaging/{control,conffiles} "$package/DEBIAN/"
+install -m 755 packaging/{postinst,prerm,postrm} "$package/DEBIAN/"
+
+dpkg-deb --root-owner-group -Zgzip --build "$package" "dist/dnsblock-servico-$version.deb"
+ipa="$PWD/dist/dnsblock-painel-$version.ipa"
+rm -f "$ipa"
+(cd "$build" && zip -q -r "$ipa" Payload)
+echo "Pacotes gerados em dist/."

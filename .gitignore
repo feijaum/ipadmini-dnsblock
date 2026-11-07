@@ -1,0 +1,13 @@
+/build/
+/dist/
+*.deb
+*.ipa
+*.app/
+*.dSYM/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+__pycache__/
+.env
+.env.*
+*.log
