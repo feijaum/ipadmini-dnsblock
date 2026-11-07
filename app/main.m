@@ -495,6 +495,13 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [settings addAction:[UIAlertAction actionWithTitle:@"Atualizar estado do DNS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self refreshStatus];
     }]];
+    if ([self.status[@"compatibility"] isKindOfClass:[NSNumber class]]) {
+        BOOL compatible = [self.status[@"compatibility"] boolValue];
+        NSString *title = compatible ? @"Desativar compatibilidade DNS" : @"Ativar compatibilidade DNS";
+        [settings addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self runCommand:compatible ? "standard\n" : "compat\n" changing:YES];
+        }]];
+    }
     if (self.weather.enabled) {
         [settings addAction:[UIAlertAction actionWithTitle:@"Atualizar clima local" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             [self.weather enable];

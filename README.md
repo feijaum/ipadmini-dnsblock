@@ -4,9 +4,9 @@ Reaproveite um iPad ou iPhone antigo como bloqueador de anúncios e rastreadores
 
 ## Download
 
-A **Central da Casa 0.3.1** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
+A **Central da Casa 0.3.2** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
 
-1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.3.1-ios.1/dnsblock-central-0.3.1.deb).
+1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.3.2-ios.1/dnsblock-central-0.3.2.deb).
 2. Com o Carbon ativo, abra o arquivo no **Filza** e toque em **Install**. O pacote atualiza o serviço DNS existente e preserva suas configurações. O ícone da Central é um relógio em fundo azul-escuro. Se ele não aparecer, confira se o Cydia tem o pacote **UIKit Tools** instalado, atualize o cache de ícones com `su mobile -c uicache` em um terminal root e faça um respring.
 3. Abra **Central da Casa**. Se você instalou o painel antigo por IPA, ele continua aparecendo como **DNSBlock**. Toque em **Bloqueio** para alternar o filtro. O iPad continua resolvendo DNS com o filtro desligado. O botão **Ajustes** mostra o IP e os contadores, permite selecionar a agenda e adicionar fotos.
 4. Escolha um calendário disponível no app **Calendário** do iPad. Se a conta Google estiver sincronizada com o iOS, selecione o calendário da família. Adicione as fotos pela fototeca do iPad. Para usar fotos do Drive, importe primeiro para o app **Fotos**. O carrossel guarda cópias locais e gira a cada 12 segundos.
@@ -23,6 +23,10 @@ O despertador continua no app **Relógio**. O painel segue o ajuste de bloqueio 
 - **Painel nativo** — app em Objective-C e UIKit com relógio, agenda e fotos, além do estado do filtro, IP e contadores. O botão de bloqueio altera o filtro sem desligar o DNS.
 - **Filtro local** — compara o domínio e seus sufixos com a lista. Um domínio bloqueado recebe `NXDOMAIN`. As demais consultas seguem para o resolvedor configurado. A lista inicial é pequena e editável.
 - **Privacidade** — o serviço guarda apenas os totais em memória e a preferência do filtro em disco. Consultas encaminhadas são visíveis ao resolvedor DNS configurado e viajam em DNS convencional. O painel usa uma porta de controle acessível apenas no próprio iPad.
+
+### Compatibilidade DNS
+
+Em **Ajustes → Ativar compatibilidade DNS**, os domínios bloqueados passam a receber `NOERROR` com endereço nulo para A e AAAA e resposta vazia para outros tipos. A lista continua ativa e essas consultas não são encaminhadas. O modo padrão usa `NXDOMAIN`. Essa opção pode ajudar se o aplicativo testar apenas o código de resposta DNS. Aplicativos que exigem conexão com o servidor de anúncios ainda podem detectar o bloqueio.
 
 O filtro funciona nos clientes que usam esse DNS. DNS privado, DoH ou configurações próprias de alguns apps podem contorná-lo. Anúncios servidos pelo mesmo domínio do conteúdo, como os de vídeo no YouTube, ficam fora do alcance confiável desse tipo de filtro. Nesta versão, os clientes usam IPv4 para chegar ao serviço, que pode encaminhar consultas AAAA normalmente. O serviço usa um resolvedor remoto e não inclui cache próprio ou DHCP.
 
@@ -50,7 +54,7 @@ Para gerar os pacotes, use um Mac com Xcode/SDK legado que compile para ARMv7 e 
 DEVELOPER_DIR=/Applications/Xcode-7.3.1.app/Contents/Developer make ios
 ```
 
-O script gera `dist/dnsblock-central-0.3.1.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
+O script gera `dist/dnsblock-central-0.3.2.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
 
 ## Configuração da rede
 

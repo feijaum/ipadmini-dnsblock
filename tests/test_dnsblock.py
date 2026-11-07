@@ -163,6 +163,40 @@ class DNSBlockTest(unittest.TestCase):
         self.assertTrue(self.control(b"enable\n")["enabled"])
         self.assertEqual(self.ask(packet)[3] & 0x0F, 3)
 
+    def test_compatibility_keeps_blocking_without_nxdomain(self):
+        self.stop_service()
+        self.state.write_text("1\n")  # Preference written by releases before compatibility mode.
+        self.start_service()
+        self.assertFalse(self.control(b"status\n")["compatibility"])
+        self.assertTrue(self.control(b"compat\n")["compatibility"])
+        self.stop_service()
+        self.start_service()
+        self.assertTrue(self.control(b"status\n")["compatibility"])
+
+        for tcp in (False, True):
+            for record_type, address_size in ((1, 4), (28, 16), (65, 0)):
+                packet = query("sub.ads.example", record_type)
+                answer = self.ask(packet, tcp)
+                self.assertEqual(answer[:2], packet[:2])
+                self.assertEqual(answer[3] & 0x0F, 0)
+                self.assertEqual(answer[12:len(packet)], packet[12:])
+                self.assertEqual(struct.unpack("!H", answer[6:8])[0], bool(address_size))
+                if address_size:
+                    record = struct.pack("!HHHIH", 0xC00C, record_type, 1, 0, address_size)
+                    self.assertEqual(answer[len(packet):], record + bytes(address_size))
+                else:
+                    self.assertEqual(len(answer), len(packet))
+            packet = query("plain.example")
+            self.assertEqual(self.ask(packet, tcp), mock_answer(packet))
+
+        self.assertEqual(self.control(b"status\n")["blocked"], 6)
+        self.assertTrue(self.control(b"disable\n")["compatibility"])
+        packet = query("ads.example")
+        self.assertEqual(self.ask(packet), mock_answer(packet))
+        self.assertTrue(self.control(b"enable\n")["compatibility"])
+        self.assertFalse(self.control(b"standard\n")["compatibility"])
+        self.assertEqual(self.ask(packet)[3] & 0x0F, 3)
+
     def test_rejects_malformed_dns_and_mismatched_upstream_reply(self):
         malformed = query("ads.example")[:14]
         self.assertEqual(self.ask(malformed)[3] & 0x0F, 1)

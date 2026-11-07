@@ -45,6 +45,7 @@ static struct {
     size_t domain_count;
     const char *state_path;
     bool enabled;
+    bool compatibility;
     unsigned long long queries;
     unsigned long long blocked;
     pthread_mutex_t lock;
@@ -278,6 +279,28 @@ static size_t error_response(const uint8_t *query, const struct question *questi
     return length;
 }
 
+static size_t blocked_response(uint8_t *query, const struct question *question,
+                               uint8_t *answer, bool compatibility)
+{
+    size_t length = error_response(query, question, answer, compatibility ? 0 : NXDOMAIN);
+    if (!compatibility || (question->type != 1 && question->type != 28))
+        return length;
+
+    /* NOERROR with a zero address, without contacting the upstream resolver.
+       Other record types return NOERROR with no answer. */
+    const uint8_t address_length = question->type == 1 ? 4 : 16;
+    const uint8_t record[] = {
+        0xc0, DNS_HEADER,                     /* Name points at the question. */
+        0, (uint8_t)question->type, 0, 1,      /* A or AAAA, class IN. */
+        0, 0, 0, 0,                           /* TTL 0 for quick mode changes. */
+        0, address_length
+    };
+    answer[7] = 1;
+    memcpy(answer + length, record, sizeof(record));
+    memset(answer + length + sizeof(record), 0, address_length);
+    return length + sizeof(record) + address_length;
+}
+
 static size_t resolve(uint8_t *query, size_t size, uint8_t *answer, bool tcp)
 {
     struct question question;
@@ -292,11 +315,12 @@ static size_t resolve(uint8_t *query, size_t size, uint8_t *answer, bool tcp)
     pthread_mutex_lock(&server.lock);
     server.queries++;
     bool block = server.enabled && listed;
+    bool compatibility = server.compatibility;
     if (block)
         server.blocked++;
     pthread_mutex_unlock(&server.lock);
     if (block)
-        return error_response(query, &question, answer, NXDOMAIN);
+        return blocked_response(query, &question, answer, compatibility);
 
     size_t length = forward(query, size, answer, tcp);
     struct question echoed;
@@ -375,7 +399,7 @@ static void *tcp_loop(void *argument)
     return NULL;
 }
 
-static bool store_state(bool enabled)
+static bool store_state(bool enabled, bool compatibility)
 {
     char temporary[1024];
     int length = snprintf(temporary, sizeof(temporary), "%s.XXXXXX", server.state_path);
@@ -384,7 +408,8 @@ static bool store_state(bool enabled)
     int file = mkstemp(temporary);
     if (file < 0)
         return false;
-    bool saved = write(file, enabled ? "1\n" : "0\n", 2) == 2 && fsync(file) == 0;
+    const char state[] = { enabled ? '1' : '0', '\n', compatibility ? '1' : '0', '\n' };
+    bool saved = write(file, state, sizeof(state)) == sizeof(state) && fsync(file) == 0;
     if (close(file) || !saved || rename(temporary, server.state_path)) {
         unlink(temporary);
         return false;
@@ -406,19 +431,27 @@ static void *control_loop(void *argument)
 
         bool enable = len == 7 && !memcmp(command, "enable\n", len);
         bool disable = len == 8 && !memcmp(command, "disable\n", len);
+        bool compatible = len == 7 && !memcmp(command, "compat\n", len);
+        bool standard = len == 9 && !memcmp(command, "standard\n", len);
+        bool changing = enable || disable || compatible || standard;
         char response[224] = "{\"error\":\"comando inválido\"}\n";
-        if (enable || disable || (len == 7 && !memcmp(command, "status\n", len))) {
+        if (changing || (len == 7 && !memcmp(command, "status\n", len))) {
             char ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &server.lan, ip, sizeof(ip));
             /* Only this worker modifies the on-disk preference. */
-            bool saved = !(enable || disable) || store_state(enable);
+            bool enabled = enable || (!disable && server.enabled);
+            bool compatibility = compatible || (!standard && server.compatibility);
+            bool saved = !changing || store_state(enabled, compatibility);
             pthread_mutex_lock(&server.lock);
-            if (saved && (enable || disable))
-                server.enabled = enable;
+            if (saved && changing) {
+                server.enabled = enabled;
+                server.compatibility = compatibility;
+            }
             if (saved)
                 snprintf(response, sizeof(response),
-                         "{\"enabled\":%s,\"queries\":%llu,\"blocked\":%llu,\"ip\":\"%s\"}\n",
-                         server.enabled ? "true" : "false", server.queries, server.blocked, ip);
+                         "{\"enabled\":%s,\"compatibility\":%s,\"queries\":%llu,\"blocked\":%llu,\"ip\":\"%s\"}\n",
+                         server.enabled ? "true" : "false", server.compatibility ? "true" : "false",
+                         server.queries, server.blocked, ip);
             else
                 snprintf(response, sizeof(response), "{\"error\":\"falha ao salvar a preferência\"}\n");
             pthread_mutex_unlock(&server.lock);
@@ -551,6 +584,7 @@ int main(int argc, char **argv)
     FILE *state = fopen(server.state_path, "r");
     if (state) {
         server.enabled = fgetc(state) != '0';
+        server.compatibility = fgetc(state) == '\n' && fgetc(state) == '1';
         fclose(state);
     }
 
