@@ -8,7 +8,7 @@ min_version="${IOS_MIN_VERSION:-8.0}"
 clang="${IOS_CLANG:-$(xcrun --sdk iphoneos --find clang)}"
 ldid="${LDID:-ldid}"
 version="$(awk '/^Version:/ {print $2}' packaging/control)"
-for tool in "$clang" "$ldid" dpkg-deb zip; do
+for tool in "$clang" "$ldid" dpkg-deb zip python3; do
     command -v "$tool" >/dev/null || { echo "Ferramenta ausente: $tool" >&2; exit 1; }
 done
 [[ -d "$sdk" ]] || { echo "SDK do iOS não encontrado: $sdk" >&2; exit 1; }
@@ -24,13 +24,26 @@ for arch in $archs; do
     case "$arch" in armv7|arm64) arch_flags+=(-arch "$arch");; *) exit 1;; esac
 done
 flags=("${arch_flags[@]}" -isysroot "$sdk" "-miphoneos-version-min=$min_version" -O2 -Wall -Wextra)
+if [[ -n "${IOS_LINKER:-}" ]]; then
+    flags+=(--target="armv7-apple-ios$min_version" "-fuse-ld=$IOS_LINKER"
+        -mlinker-version=609 -Wl,-segalign,4000 -Wl,-no_data_const)
+fi
 "$clang" "${flags[@]}" -std=c99 -pthread src/dnsblock.c -o "$package/usr/libexec/ipadmini-dnsblock"
 "$clang" "${flags[@]}" -fobjc-arc -fblocks -framework UIKit -framework Foundation app/main.m -o "$app/DNSBlock"
 "$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
 "$ldid" -S "$app/DNSBlock"
 
 install -m 644 app/Info.plist "$app/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $min_version" "$app/Info.plist"
+python3 - "$app/Info.plist" "$min_version" <<'PLIST'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as stream:
+    info = plistlib.load(stream)
+info["MinimumOSVersion"] = sys.argv[2]
+with open(sys.argv[1], "wb") as stream:
+    plistlib.dump(info, stream)
+PLIST
 install -m 644 packaging/com.feijaum.ipadminidnsblock.plist "$package/Library/LaunchDaemons/"
 install -m 644 config/{blocklist.txt,upstream} "$package/etc/ipadmini-dnsblock/"
 install -m 644 packaging/{control,conffiles} "$package/DEBIAN/"

@@ -1,0 +1,99 @@
+name: Prévia iOS ARMv7
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ios-preview.yml
+
+permissions:
+  contents: read
+
+concurrency: ios-preview
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Instalar toolchain e SDK legado
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libtinfo5 libxml2
+          mkdir -p "$RUNNER_TEMP/ios-toolchain" "$RUNNER_TEMP/ios-sdk"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/L1ghtmann/llvm-project/releases/download/test-210562a/iOSToolchain-x86_64.tar.xz \
+            -o "$RUNNER_TEMP/ios-toolchain.tar.xz"
+          tar -xJf "$RUNNER_TEMP/ios-toolchain.tar.xz" -C "$RUNNER_TEMP/ios-toolchain"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS9.3.sdk.tar.xz \
+            -o "$RUNNER_TEMP/ios-sdk.tar.xz"
+          tar -xJf "$RUNNER_TEMP/ios-sdk.tar.xz" -C "$RUNNER_TEMP/ios-sdk"
+          bin="$RUNNER_TEMP/ios-toolchain/linux/iphone/bin"
+          linker="$(find "$bin" -maxdepth 1 \( -name '*-apple-darwin*-ld' -o -name ld \) -print -quit)"
+          test -x "$linker"
+          test -x "$bin/clang"
+          test -x "$bin/ldid"
+          sdk="$(find "$RUNNER_TEMP/ios-sdk" -type d -name iPhoneOS9.3.sdk -print -quit)"
+          test -d "$sdk"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
+          {
+            printf 'IOS_CLANG=%s\n' "$bin/clang"
+            printf 'IOS_LINKER=%s\n' "$linker"
+            printf 'IOS_SDK=%s\n' "$sdk"
+            printf 'LDID=%s\n' "$bin/ldid"
+            printf 'LD_LIBRARY_PATH=%s\n' "$bin/../lib"
+          } >> "$GITHUB_ENV"
+      - name: Compilar e verificar os pacotes
+        shell: bash
+        run: |
+          make test
+          make ios
+          python3 scripts/verify-ios-armv7.py dist/*.ipa dist/*.deb
+          (cd dist && sha256sum *.ipa *.deb > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dnsblock-ios-armv7
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dnsblock-ios-armv7
+          path: dist
+      - name: Publicar prévia experimental
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          tag=v0.1.0-ios.1
+          if gh release view "$tag" --json assets,isDraft > "$RUNNER_TEMP/ios-release.json" 2>/dev/null; then
+            jq -e '.isDraft == false and ([.assets[].name] | sort) == ["SHA256SUMS.txt", "dnsblock-painel-0.1.0.ipa", "dnsblock-servico-0.1.0.deb"]' "$RUNNER_TEMP/ios-release.json"
+            exit
+          fi
+          cat > "$RUNNER_TEMP/ios-notes.md" <<'NOTES'
+          Build experimental para ARMv7, com iOS 8.0 como mínimo. Compatibilidade no aparelho ainda não verificada.
+
+          1. Instale o arquivo **.deb** com o jailbreak ativo, pelo instalador de pacotes ou com `dpkg -i` como root.
+          2. Instale o **.ipa** usando um instalador de IPA compatível com AppSync Unified.
+          3. Abra **DNSBlock** no Wi-Fi e confira se aparece **Conectado**. Teste com o DNS manual de um único computador antes de mudar o roteador.
+
+          Os arquivos ficam em **Assets**. O download pelo Safari e a instalação são etapas separadas.
+          NOTES
+          gh release create "$tag" dist/*.ipa dist/*.deb dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --prerelease --title "DNSBlock Legacy 0.1.0 — prévia iOS ARMv7" \
+            --notes-file "$RUNNER_TEMP/ios-notes.md"
