@@ -4,6 +4,8 @@ import os
 import secrets
 import tempfile
 import time
+import re
+import logging
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
@@ -35,6 +37,7 @@ def download(vid: str, folder: str) -> Path:
         "retries": 2,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "128"}],
     }
+    opts['logger'] = logging.getLogger('yt_dlp')
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={vid}"])
     matches = list(Path(folder).glob("track.*"))
@@ -67,7 +70,12 @@ async def audio(url: str, background_tasks: BackgroundTasks, authorization: str 
             return FileResponse(file, media_type="audio/mp4", filename="track.m4a", background=background_tasks)
         except Exception as exc:
             folder.cleanup()
-            raise HTTPException(502, f"Audio unavailable: {type(exc).__name__}")
+            message = str(exc)
+            message = re.sub(r"https?://\\S+", "[URL]", message)
+            message = re.sub(r"(?i)(cookie|token|authorization|password|secret)\\s*[:=]\\s*\\S+", r"\\1=[REDACTED]", message)
+            message = message[:350]
+            logging.exception("Audio bridge download failed")
+            raise HTTPException(502, f"{type(exc).__name__}: {message}")
 
 @app.get("/test", response_class=HTMLResponse)
 def test_page():
