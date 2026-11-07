@@ -8,6 +8,10 @@ on:
       - .github/workflows/ios-preview.yml
       - scripts/build-ios.sh
       - scripts/verify-ios-armv7.py
+      - app/**
+      - src/**
+      - packaging/**
+      - config/**
 
 permissions:
   contents: read
@@ -62,8 +66,8 @@ jobs:
         shell: bash
         run: |
           make ios
-          python3 scripts/verify-ios-armv7.py dist/*.ipa dist/*.deb
-          (cd dist && sha256sum *.ipa *.deb > SHA256SUMS.txt)
+          python3 scripts/verify-ios-armv7.py dist/*.deb
+          (cd dist && sha256sum *.deb > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: dnsblock-ios-armv7
@@ -88,20 +92,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           (cd dist && sha256sum -c SHA256SUMS.txt)
-          tag=v0.1.0-ios.1
+          version="$(dpkg-deb -f dist/*.deb Version)"
+          tag="v$version-ios.1"
+          package="dnsblock-central-$version.deb"
           if gh release view "$tag" --json assets,isDraft > "$RUNNER_TEMP/ios-release.json" 2>/dev/null; then
-            jq -e '.isDraft == false and ([.assets[].name] | sort) == ["SHA256SUMS.txt", "dnsblock-painel-0.1.0.ipa", "dnsblock-servico-0.1.0.deb"]' "$RUNNER_TEMP/ios-release.json"
+            jq -e --arg package "$package" '.isDraft == false and ([.assets[].name] | sort) == ["SHA256SUMS.txt", $package]' "$RUNNER_TEMP/ios-release.json"
             exit
           fi
           cat > "$RUNNER_TEMP/ios-notes.md" <<'NOTES'
-          Build experimental para ARMv7, com iOS 8.0 como mínimo. Compatibilidade no aparelho ainda não verificada.
-
-          1. Instale o arquivo **.deb** com o jailbreak ativo, pelo instalador de pacotes ou com `dpkg -i` como root.
-          2. Instale o **.ipa** usando um instalador de IPA compatível com AppSync Unified.
-          3. Abra **DNSBlock** no Wi-Fi e confira se aparece **Conectado**. Teste com o DNS manual de um único computador antes de mudar o roteador.
-
-          Os arquivos ficam em **Assets**. O download pelo Safari e a instalação são etapas separadas.
+          Pacote único para ARMv7, com iOS 8.0 como mínimo. Inclui o painel Central da Casa e o serviço DNSBlock.
+          Instale o .deb no Filza com o jailbreak ativo e abra Central da Casa. O botão Bloqueio alterna o filtro enquanto o DNS continua respondendo.
+          Compilação e pacote verificados. Instalação e interface ainda precisam ser testadas no aparelho.
           NOTES
-          gh release create "$tag" dist/*.ipa dist/*.deb dist/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" --prerelease --title "DNSBlock Legacy 0.1.0 — prévia iOS ARMv7" \
+          gh release create "$tag" "dist/$package" dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --prerelease --title "DNSBlock Legacy $version — Central da Casa" \
             --notes-file "$RUNNER_TEMP/ios-notes.md"

@@ -8,7 +8,7 @@ min_version="${IOS_MIN_VERSION:-8.0}"
 clang="${IOS_CLANG:-$(xcrun --sdk iphoneos --find clang)}"
 ldid="${LDID:-ldid}"
 version="$(awk '/^Version:/ {print $2}' packaging/control)"
-for tool in "$clang" "$ldid" dpkg-deb zip python3; do
+for tool in "$clang" "$ldid" dpkg-deb python3; do
     command -v "$tool" >/dev/null || { echo "Ferramenta ausente: $tool" >&2; exit 1; }
 done
 [[ -d "$sdk" ]] || { echo "SDK do iOS não encontrado: $sdk" >&2; exit 1; }
@@ -16,7 +16,7 @@ done
 build="$(mktemp -d)"
 trap 'rm -rf "$build"' EXIT
 package="$build/deb"
-app="$build/Payload/DNSBlock.app"
+app="$package/Applications/DNSBlockCentral.app"
 mkdir -p "$package"/{DEBIAN,usr/libexec,Library/LaunchDaemons,etc/ipadmini-dnsblock} "$app" dist
 
 arch_flags=()
@@ -32,11 +32,11 @@ fi
 # The iOS 8 runtime provides the ARC and Foundation features used here.
 # Pass ARC to compilation only, so Clang does not force-load libarclite.
 "$clang" "${flags[@]}" -fobjc-arc -fblocks -c app/main.m -o "$build/app.o"
-"$clang" "${flags[@]}" "$build/app.o" -framework UIKit -framework Foundation -lobjc -o "$app/DNSBlock"
+"$clang" "${flags[@]}" "$build/app.o" -framework UIKit -framework Foundation -framework EventKit -framework QuartzCore -framework CoreGraphics -lobjc -o "$app/DNSBlock"
 "$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
 "$ldid" -S "$app/DNSBlock"
 
-install -m 644 app/Info.plist "$app/Info.plist"
+install -m 644 app/Info.plist app/Icon-*.png "$app/"
 python3 - "$app/Info.plist" "$min_version" <<'PLIST'
 import plistlib
 import sys
@@ -52,8 +52,5 @@ install -m 644 config/{blocklist.txt,upstream} "$package/etc/ipadmini-dnsblock/"
 install -m 644 packaging/{control,conffiles} "$package/DEBIAN/"
 install -m 755 packaging/{postinst,prerm,postrm} "$package/DEBIAN/"
 
-dpkg-deb --root-owner-group -Zgzip --build "$package" "dist/dnsblock-servico-$version.deb"
-ipa="$PWD/dist/dnsblock-painel-$version.ipa"
-rm -f "$ipa"
-(cd "$build" && zip -q -r "$ipa" Payload)
-echo "Pacotes gerados em dist/."
+dpkg-deb --root-owner-group -Zgzip --build "$package" "dist/dnsblock-central-$version.deb"
+echo "Pacote gerado em dist/."

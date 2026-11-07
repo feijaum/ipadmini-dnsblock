@@ -3,16 +3,26 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>pt_BR</string>
-    <key>CFBundleDisplayName</key><string>DNSBlock</string>
+    <key>CFBundleDisplayName</key><string>Central da Casa</string>
     <key>CFBundleExecutable</key><string>DNSBlock</string>
-    <key>CFBundleIdentifier</key><string>com.feijaum.ipadminidnsblock.app</string>
+    <key>CFBundleIdentifier</key><string>com.feijaum.ipadminidnsblock.central</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>DNSBlock</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>NSCalendarsUsageDescription</key><string>Mostra os compromissos do calendário que você escolher.</string>
+    <key>NSPhotoLibraryUsageDescription</key><string>Adiciona ao carrossel as fotos que você selecionar.</string>
     <key>MinimumOSVersion</key><string>8.0</string>
     <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+    <key>CFBundleIcons</key>
+    <dict><key>CFBundlePrimaryIcon</key><dict>
+        <key>CFBundleIconFiles</key><array><string>Icon-60</string></array>
+    </dict></dict>
+    <key>CFBundleIcons~ipad</key>
+    <dict><key>CFBundlePrimaryIcon</key><dict>
+        <key>CFBundleIconFiles</key><array><string>Icon-76</string></array>
+    </dict></dict>
     <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>UISupportedInterfaceOrientations</key>

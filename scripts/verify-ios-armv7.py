@@ -7,7 +7,6 @@ import struct
 import subprocess
 import sys
 import tarfile
-import zipfile
 
 
 def verify_macho(executable):
@@ -32,17 +31,17 @@ def verify_macho(executable):
 
 
 def main():
-    ipa, deb = map(Path, sys.argv[1:])
-    with zipfile.ZipFile(ipa) as app:
-        info = plistlib.loads(app.read("Payload/DNSBlock.app/Info.plist"))
-        if info.get("MinimumOSVersion") != "8.0" or info.get("CFBundleExecutable") != "DNSBlock":
-            raise ValueError("Info.plist incompatível com a build")
-        verify_macho(app.read("Payload/DNSBlock.app/DNSBlock"))
+    deb = Path(sys.argv[1])
     payload = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(deb)])
     with tarfile.open(fileobj=io.BytesIO(payload)) as package:
-        daemon = package.extractfile("./usr/libexec/ipadmini-dnsblock")
-        verify_macho(daemon.read())
-    print("IPA e DEB verificados: Mach-O ARMv7, iOS 8.0 e assinatura ad hoc.")
+        app_path = "./Applications/DNSBlockCentral.app/"
+        info = plistlib.load(package.extractfile(app_path + "Info.plist"))
+        if info.get("MinimumOSVersion") != "8.0" or info.get("CFBundleExecutable") != "DNSBlock":
+            raise ValueError("Info.plist incompatível com a build")
+        verify_macho(package.extractfile(app_path + info["CFBundleExecutable"]).read())
+        verify_macho(package.extractfile("./usr/libexec/ipadmini-dnsblock").read())
+        package.getmember("./Library/LaunchDaemons/com.feijaum.ipadminidnsblock.plist")
+    print("DEB verificado: painel e serviço Mach-O ARMv7, iOS 8.0 e assinatura ad hoc.")
 
 
 if __name__ == "__main__":

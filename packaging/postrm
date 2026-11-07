@@ -3,3 +3,6 @@ set -eu
 if [ "${1:-}" = purge ]; then
     rm -f /var/mobile/Library/Preferences/com.feijaum.ipadminidnsblock.enabled
 fi
+if [ "${1:-}" = remove ] && command -v uicache >/dev/null 2>&1; then
+    uicache >/dev/null 2>&1 || true
+fi
