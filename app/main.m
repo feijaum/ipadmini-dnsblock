@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import "Weather.h"
 #import "DrivePhotos.h"
+#import "Music.h"
 #import <EventKit/EventKit.h>
 #import <arpa/inet.h>
 #import <errno.h>
@@ -52,7 +53,6 @@ static NSDictionary *RequestStatus(const char *command)
 
 static NSString *const CalendarPreference = @"familyCalendar";
 static NSString *const PhotoFillPreference = @"photoFillMode";
-enum { PhotoHistoryLimit = 8 };
 
 static NSString *const PhotosPreference = @"familyPhotos";
 
@@ -113,14 +113,13 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UILabel *photoHeading;
 @property(nonatomic, strong) UILabel *photoHint;
 @property(nonatomic, strong) UIImageView *photo;
-@property(nonatomic, strong) UIButton *previousPhotoButton;
-@property(nonatomic, strong) UIButton *nextPhotoButton;
 @property(nonatomic, strong) UIButton *photoFitButton;
-@property(nonatomic, strong) NSMutableArray *photoHistory;
-@property(nonatomic) NSUInteger photoHistoryIndex;
 @property(nonatomic, strong) DrivePhotos *drivePhotos;
 @property(nonatomic, strong) UIButton *filterButton;
 @property(nonatomic, strong) UIButton *settingsButton;
+@property(nonatomic, strong) HouseMusic *music;
+@property(nonatomic, strong) UIButton *musicSearchButton;
+@property(nonatomic, strong) UIButton *musicToggleButton;
 @property(nonatomic, strong) NSDateFormatter *clockFormat;
 @property(nonatomic, strong) NSDateFormatter *dateFormat;
 @property(nonatomic, strong) NSDateFormatter *eventFormat;
@@ -156,6 +155,16 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.filterButton.enabled = NO;
     self.settingsButton = Button(self.view, @"⚙  Ajustes", self, @selector(showSettings));
     self.settingsButton.accessibilityLabel = @"Configurações";
+    self.music = [[HouseMusic alloc] init];
+    self.musicSearchButton = Button(self.view, @"", self, @selector(searchMusic));
+    self.musicSearchButton.accessibilityHint = @"Abre a busca de faixas de áudio do Audius";
+    self.musicSearchButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.musicSearchButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    self.musicSearchButton.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
+    self.musicToggleButton = Button(self.view, @"Tocar", self, @selector(toggleMusic));
+    __weak HomePanel *musicPanel = self;
+    self.music.didUpdate = ^{ [musicPanel updateMusicButtons]; };
+    [self updateMusicButtons];
 
     self.clockCard = Card(self.view, 0x131f33);
     self.clockCard.backgroundColor = [self.clockCard.backgroundColor colorWithAlphaComponent:0.44];
@@ -198,7 +207,6 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.photoCard = Card(self.view, 0x223247);
     self.photo = [[UIImageView alloc] init];
     self.photo.backgroundColor = Color(0x152131);
-    self.photoHistory = [NSMutableArray array];
     self.photo.clipsToBounds = YES;
     [self.photoCard addSubview:self.photo];
     UIView *photoCaption = [[UIView alloc] init];
@@ -208,12 +216,6 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.photoHeading.text = @"FOTOS DA FAMÍLIA";
     self.photoFitButton = Button(photoCaption, @"", self, @selector(togglePhotoFit));
     [self applyPhotoFit];
-    self.previousPhotoButton = Button(self.photoCard, @"‹", self, @selector(previousPhoto));
-    self.previousPhotoButton.accessibilityLabel = @"Foto anterior";
-    self.previousPhotoButton.titleLabel.font = [UIFont systemFontOfSize:32];
-    self.nextPhotoButton = Button(self.photoCard, @"›", self, @selector(nextPhoto));
-    self.nextPhotoButton.accessibilityLabel = @"Próxima foto";
-    self.nextPhotoButton.titleLabel.font = [UIFont systemFontOfSize:32];
     self.photoHint = Label(self.photoCard, 15, @"HelveticaNeue", 0xb5cce7);
     self.photoHint.text = @"Adicione fotos em Ajustes";
     self.photoHint.textAlignment = NSTextAlignmentCenter;
@@ -255,7 +257,12 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.settingsButton.frame = CGRectMake(width - padding - 96, buttonY, 96, 44);
     self.filterButton.frame = CGRectMake(width - padding - 274, buttonY, 168, 44);
 
-    CGFloat top = buttonY + 44 + gap;
+    CGFloat musicY = buttonY + 44 + gap;
+    CGFloat toggleWidth = self.music.canToggle ? 84 : 0;
+    CGFloat musicGap = self.music.canToggle ? 8 : 0;
+    self.musicSearchButton.frame = CGRectMake(padding, musicY, inner - toggleWidth - musicGap, 44);
+    self.musicToggleButton.frame = CGRectMake(width - padding - toggleWidth, musicY, toggleWidth, 44);
+    CGFloat top = musicY + 44 + gap;
     CGFloat available = height - top - padding;
     BOOL sideBySide = landscape || width >= 600;
     CGFloat photoHeight = floor(available * (sideBySide ? 0.59 : 0.48));
@@ -303,10 +310,23 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.photoHeading.superview.frame = CGRectMake(0, 0, photoWidth, captionHeight);
     self.photoHeading.frame = CGRectMake(16, 0, photoWidth - 126, captionHeight);
     self.photoFitButton.frame = CGRectMake(photoWidth - 110, 4, 102, 40);
-    self.photoHint.frame = CGRectInset(self.photo.frame, 52, 0);
-    CGFloat arrowsY = captionHeight + MAX(0, (panelHeight - captionHeight - 48) / 2);
-    self.previousPhotoButton.frame = CGRectMake(8, arrowsY, 44, 48);
-    self.nextPhotoButton.frame = CGRectMake(photoWidth - 52, arrowsY, 44, 48);
+    self.photoHint.frame = CGRectInset(self.photo.frame, 16, 0);
+
+}
+
+- (void)searchMusic
+{
+    [self presentViewController:[self.music searchController] animated:YES completion:nil];
+}
+
+- (void)toggleMusic { [self.music togglePlayback]; }
+
+- (void)updateMusicButtons
+{
+    [self.musicSearchButton setTitle:[NSString stringWithFormat:@"♫  %@", self.music.summary] forState:UIControlStateNormal];
+    [self.musicToggleButton setTitle:(self.music.playing ? @"Pausar" : @"Tocar") forState:UIControlStateNormal];
+    self.musicToggleButton.hidden = !self.music.canToggle;
+    [self.view setNeedsLayout];
 }
 
 - (void)updateClock
@@ -320,6 +340,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     [self.weather resume];
     [self.drivePhotos resume];
+    [self updateMusicButtons];
     [self updateClock];
     [self refreshStatus];
     [self updateAgenda];
@@ -332,6 +353,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     [self.weather pause];
     [self.drivePhotos pause];
+    [self.music pause];
     [self.timer invalidate];
     self.timer = nil;
 }
@@ -534,55 +556,20 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
             options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionBeginFromCurrentState
             animations:^{ self.photo.image = image; } completion:nil];
     }
-    self.previousPhotoButton.enabled = self.photoHistoryIndex > 0;
-    self.nextPhotoButton.enabled = image != nil || self.drivePhotos.hasAlbum;
     self.photoHint.text = self.drivePhotos.connected ? self.drivePhotos.status : @"Adicione fotos em Ajustes";
     self.photoHint.hidden = image != nil;
-}
-
-- (void)previousPhoto
-{
-    if (self.photoHistoryIndex == 0) return;
-    self.lastPhotoChange = [NSProcessInfo processInfo].systemUptime;
-    self.photoHistoryIndex--;
-    [self showPhoto:self.photoHistory[self.photoHistoryIndex]];
-}
-
-- (void)clearPhotoHistory
-{
-    [self.photoHistory removeAllObjects];
-    self.photoHistoryIndex = 0;
 }
 
 - (void)nextPhoto
 {
     self.lastPhotoChange = [NSProcessInfo processInfo].systemUptime;
-    if (self.showingDrivePhoto && !self.drivePhotos.hasAlbum) {
-        self.showingDrivePhoto = NO;
-        [self clearPhotoHistory];
-    }
-    if (self.photoHistoryIndex + 1 < self.photoHistory.count) {
-        self.photoHistoryIndex++;
-        [self showPhoto:self.photoHistory[self.photoHistoryIndex]];
-        return;
-    }
-
     UIImage *image = [self.drivePhotos nextImage];
-    if (image && !self.showingDrivePhoto) {
-        self.showingDrivePhoto = YES;
-        [self clearPhotoHistory];
-    }
-    if (!image && self.showingDrivePhoto) return;
-
+    if (!image && self.showingDrivePhoto && self.drivePhotos.hasAlbum) return;
+    self.showingDrivePhoto = image != nil;
     NSArray *photos = [[NSUserDefaults standardUserDefaults] arrayForKey:PhotosPreference];
     if (!image && photos.count) {
         self.photoIndex = self.photoIndex >= photos.count - 1 ? 0 : self.photoIndex + 1;
         image = [UIImage imageWithContentsOfFile:[self photoPath:photos[self.photoIndex]]];
-    }
-    if (image && image != self.photoHistory.lastObject) {
-        if (self.photoHistory.count == PhotoHistoryLimit) [self.photoHistory removeObjectAtIndex:0];
-        [self.photoHistory addObject:image];
-        self.photoHistoryIndex = self.photoHistory.count - 1;
     }
     [self showPhoto:image];
 }
@@ -648,7 +635,6 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
             [[NSFileManager defaultManager] removeItemAtPath:[self photoPath:name] error:NULL];
         }
         [defaults removeObjectForKey:PhotosPreference];
-        if (!self.showingDrivePhoto) [self clearPhotoHistory];
         [self nextPhoto];
     }]];
     [self presentViewController:alert animated:YES completion:nil];

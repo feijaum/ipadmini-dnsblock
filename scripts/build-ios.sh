@@ -32,12 +32,12 @@ fi
 # The iOS 8 runtime provides the ARC and Foundation features used here.
 # Pass ARC to compilation only, so Clang does not force-load libarclite.
 objects=()
-for source in app/main.m app/Weather.m app/DrivePhotos.m; do
+for source in app/main.m app/Weather.m app/DrivePhotos.m app/Music.m; do
     object="$build/$(basename "$source" .m).o"
     "$clang" "${flags[@]}" -fobjc-arc -fblocks -c "$source" -o "$object"
     objects+=("$object")
 done
-"$clang" "${flags[@]}" "${objects[@]}" -framework UIKit -framework Foundation -framework EventKit \
+"$clang" "${flags[@]}" "${objects[@]}" -framework UIKit -framework Foundation -framework EventKit -framework AVFoundation \
     -framework QuartzCore -framework CoreGraphics -framework CoreLocation -framework CFNetwork -framework ImageIO -framework Security -lobjc -o "$app/DNSBlock"
 "$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
 "$ldid" -S "$app/DNSBlock"

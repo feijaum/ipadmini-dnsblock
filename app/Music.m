@@ -1,0 +1,331 @@
+#import "Music.h"
+#import <AVFoundation/AVFoundation.h>
+#import <Security/Security.h>
+
+static NSString *const MusicHost = @"api.audius.co";
+static const NSUInteger MaxTrackBytes = 32 * 1024 * 1024;
+
+static BOOL AllowedMusicURL(NSURL *url)
+{
+    return [url.scheme isEqualToString:@"https"] && !url.user && !url.password &&
+        (!url.port || url.port.integerValue == 443) &&
+        ([url.host hasSuffix:@".audius.co"] || [url.host hasSuffix:@".r2.cloudflarestorage.com"]);
+}
+
+static NSURL *MusicURL(NSString *path, NSString *query)
+{
+    NSURLComponents *url = [[NSURLComponents alloc] init];
+    url.scheme = @"https";
+    url.host = MusicHost;
+    url.path = path;
+    NSMutableArray *items = [NSMutableArray arrayWithObject:[NSURLQueryItem queryItemWithName:@"app_name" value:@"CentralDaCasa"]];
+    if (query) {
+        [items addObject:[NSURLQueryItem queryItemWithName:@"query" value:query]];
+        [items addObject:[NSURLQueryItem queryItemWithName:@"limit" value:@"20"]];
+    }
+    url.queryItems = items;
+    return url.URL;
+}
+
+@interface MusicTransport : NSObject <NSURLSessionDownloadDelegate>
+@end
+
+@implementation MusicTransport
+- (void)URLSession:(__unused NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+    completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *))completion
+{
+    NSURLProtectionSpace *space = challenge.protectionSpace;
+    if (![space.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust] || !space.serverTrust ||
+        !([space.host hasSuffix:@".audius.co"] || [space.host hasSuffix:@".r2.cloudflarestorage.com"])) {
+        completion(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+        return;
+    }
+    NSMutableArray *roots = [NSMutableArray array];
+    for (NSString *name in @[@"ISRG-Root-X1", @"ISRG-Root-X2", @"GTS-Root-R1", @"GTS-Root-R3", @"GTS-Root-R4"]) {
+        NSURL *resource = [[NSBundle mainBundle] URLForResource:name withExtension:@"der"];
+        NSData *data = resource ? [NSData dataWithContentsOfURL:resource] : nil;
+        if (!data) continue;
+        SecCertificateRef certificate = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)data);
+        if (certificate) [roots addObject:CFBridgingRelease(certificate)];
+    }
+    SecTrustRef trust = space.serverTrust;
+    SecPolicyRef policy = SecPolicyCreateSSL(true, (__bridge CFStringRef)space.host);
+    OSStatus policyStatus = SecTrustSetPolicies(trust, policy);
+    CFRelease(policy);
+    SecTrustResultType result = kSecTrustResultInvalid;
+    BOOL valid = policyStatus == errSecSuccess
+        && SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)roots) == errSecSuccess
+        && SecTrustSetAnchorCertificatesOnly(trust, false) == errSecSuccess
+        && SecTrustEvaluate(trust, &result) == errSecSuccess
+        && (result == kSecTrustResultUnspecified || result == kSecTrustResultProceed);
+    completion(valid ? NSURLSessionAuthChallengeUseCredential : NSURLSessionAuthChallengeCancelAuthenticationChallenge,
+               valid ? [NSURLCredential credentialForTrust:trust] : nil);
+}
+
+- (void)URLSession:(__unused NSURLSession *)session task:(__unused NSURLSessionTask *)task
+    willPerformHTTPRedirection:(__unused NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
+    completionHandler:(void (^)(NSURLRequest *))completion
+{
+    completion(AllowedMusicURL(request.URL) ? request : nil);
+}
+
+- (void)URLSession:(__unused NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)task
+      didWriteData:(__unused int64_t)bytes totalBytesWritten:(int64_t)total
+totalBytesExpectedToWrite:(int64_t)expected
+{
+    if (total > (int64_t)MaxTrackBytes || expected > (int64_t)MaxTrackBytes) [task cancel];
+}
+
+- (void)URLSession:(__unused NSURLSession *)session downloadTask:(__unused NSURLSessionDownloadTask *)task
+    didFinishDownloadingToURL:(__unused NSURL *)location
+{
+    // Playback downloads use their own completion handler.
+}
+@end
+
+@interface MusicSearch : UITableViewController <UISearchBarDelegate>
+@property(nonatomic, strong) NSURLSession *session;
+@property(nonatomic, strong) NSURLSessionDataTask *searchTask;
+@property(nonatomic, copy) NSArray *tracks;
+@property(nonatomic, strong) UISearchBar *search;
+@property(nonatomic, strong) UILabel *message;
+@property(nonatomic, copy) void (^didSelect)(NSDictionary *);
+@property(nonatomic) NSUInteger searchGeneration;
+@end
+
+@implementation MusicSearch
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.title = @"Pesquisar músicas · Audius";
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(close)];
+    self.search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 56)];
+    self.search.placeholder = @"Nome da música ou artista";
+    self.search.delegate = self;
+    self.search.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.search.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.tableView.tableHeaderView = self.search;
+    self.tableView.rowHeight = 60;
+    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+    self.message = [[UILabel alloc] initWithFrame:self.tableView.bounds];
+    self.message.textAlignment = NSTextAlignmentCenter;
+    self.message.numberOfLines = 0;
+    self.message.textColor = [UIColor darkGrayColor];
+    self.message.text = @"Digite um nome e toque em Buscar.";
+    self.tableView.backgroundView = self.message;
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    [self.search becomeFirstResponder];
+}
+
+- (void)close
+{
+    [self.searchTask cancel];
+    self.searchGeneration++;
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)search
+{
+    NSString *query = [search.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!query.length || query.length > 150) return;
+    [search resignFirstResponder];
+    [self.searchTask cancel];
+    NSUInteger generation = ++self.searchGeneration;
+    self.tracks = nil;
+    self.message.text = @"Buscando no Audius…";
+    [self.tableView reloadData];
+    NSURL *url = MusicURL(@"/v1/tracks/search", query);
+    __weak MusicSearch *controller = self;
+    self.searchTask = [self.session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSMutableArray *tracks = [NSMutableArray array];
+        BOOL success = !error && data.length && data.length <= 4 * 1024 * 1024
+            && [response isKindOfClass:[NSHTTPURLResponse class]] && [(NSHTTPURLResponse *)response statusCode] == 200;
+        id payload = success ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        id rows = [payload isKindOfClass:[NSDictionary class]] ? payload[@"data"] : nil;
+        if ([rows isKindOfClass:[NSArray class]]) {
+            for (id item in rows) {
+                if (![item isKindOfClass:[NSDictionary class]]) continue;
+                NSString *identifier = item[@"id"];
+                NSString *title = item[@"title"];
+                id user = item[@"user"];
+                NSString *artist = [user isKindOfClass:[NSDictionary class]] ? user[@"name"] : nil;
+                NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"];
+                if (![identifier isKindOfClass:[NSString class]] || !identifier.length || identifier.length > 32
+                    || [identifier rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound
+                    || ![title isKindOfClass:[NSString class]] || !title.length
+                    || [item[@"is_stream_gated"] isEqual:@YES] || [item[@"is_available"] isEqual:@NO]) continue;
+                [tracks addObject:@{@"id":identifier, @"title":title,
+                    @"artist":[artist isKindOfClass:[NSString class]] ? artist : @"Audius"}];
+                if (tracks.count == 20) break;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MusicSearch *target = controller;
+            if (!target || target.searchGeneration != generation) return;
+            target.searchTask = nil;
+            target.tracks = tracks;
+            target.message.text = tracks.count ? nil : ([rows isKindOfClass:[NSArray class]] ?
+                @"Nenhuma faixa disponível para essa busca." : @"Não foi possível buscar. Confira a conexão e tente de novo.");
+            [target.tableView reloadData];
+        });
+    }];
+    [self.searchTask resume];
+}
+
+- (NSInteger)tableView:(__unused UITableView *)table numberOfRowsInSection:(__unused NSInteger)section
+{
+    return self.tracks.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)path
+{
+    UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"MusicTrack"];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"MusicTrack"];
+    NSDictionary *track = self.tracks[path.row];
+    cell.textLabel.text = track[@"title"];
+    cell.detailTextLabel.text = track[@"artist"];
+    return cell;
+}
+
+- (void)tableView:(__unused UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path
+{
+    if (self.didSelect) self.didSelect(self.tracks[path.row]);
+    [self close];
+}
+@end
+
+@interface HouseMusic () <AVAudioPlayerDelegate>
+@property(nonatomic, readwrite, copy) NSString *summary;
+@property(nonatomic, strong) NSURLSession *session;
+@property(nonatomic, strong) NSURLSessionDownloadTask *download;
+@property(nonatomic, strong) AVAudioPlayer *audio;
+@property(nonatomic, strong) NSURL *audioFile;
+@property(nonatomic, copy) NSString *trackTitle;
+@property(nonatomic) NSUInteger generation;
+@end
+
+@implementation HouseMusic
+
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        _summary = @"Pesquisar música · Audius";
+        NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        configuration.HTTPShouldSetCookies = NO;
+        configuration.timeoutIntervalForRequest = 20;
+        configuration.timeoutIntervalForResource = 120;
+        _session = [NSURLSession sessionWithConfiguration:configuration delegate:[[MusicTransport alloc] init] delegateQueue:nil];
+    }
+    return self;
+}
+
+- (UIViewController *)searchController
+{
+    MusicSearch *search = [[MusicSearch alloc] initWithStyle:UITableViewStylePlain];
+    search.session = self.session;
+    __weak HouseMusic *music = self;
+    search.didSelect = ^(NSDictionary *track) { [music playTrack:track]; };
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:search];
+    navigation.modalPresentationStyle = UIModalPresentationFormSheet;
+    return navigation;
+}
+
+- (BOOL)canToggle { return self.audio != nil; }
+- (BOOL)isPlaying { return self.audio.isPlaying; }
+
+- (void)clearAudio
+{
+    [self.audio stop];
+    self.audio = nil;
+    if (self.audioFile) [[NSFileManager defaultManager] removeItemAtURL:self.audioFile error:NULL];
+    self.audioFile = nil;
+}
+
+- (void)playTrack:(NSDictionary *)track
+{
+    [self.download cancel];
+    [self clearAudio];
+    NSUInteger generation = ++self.generation;
+    self.trackTitle = [NSString stringWithFormat:@"%@ · %@", track[@"title"], track[@"artist"]];
+    self.summary = [NSString stringWithFormat:@"Carregando %@…", track[@"title"]];
+    if (self.didUpdate) self.didUpdate();
+
+    NSURL *url = MusicURL([NSString stringWithFormat:@"/v1/tracks/%@/stream", track[@"id"]], nil);
+    self.download = [self.session downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        NSURL *file = nil;
+        NSUInteger size = 0;
+        if (location) {
+            NSNumber *sizeValue = nil;
+            [location getResourceValue:&sizeValue forKey:NSURLFileSizeKey error:NULL];
+            size = sizeValue.unsignedIntegerValue;
+        }
+        NSString *mime = response.MIMEType.lowercaseString;
+        if (!error && AllowedMusicURL(response.URL) && [response isKindOfClass:[NSHTTPURLResponse class]]
+            && [(NSHTTPURLResponse *)response statusCode] == 200 && size > 0 && size <= MaxTrackBytes
+            && ([mime hasPrefix:@"audio/"] || [mime isEqualToString:@"application/octet-stream"])) {
+            NSString *name = [NSString stringWithFormat:@"central-audius-%@.mp3", [[NSUUID UUID] UUIDString]];
+            NSURL *destination = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
+            if ([[NSFileManager defaultManager] moveItemAtURL:location toURL:destination error:NULL]) file = destination;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.generation != generation) {
+                if (file) [[NSFileManager defaultManager] removeItemAtURL:file error:NULL];
+                return;
+            }
+            self.download = nil;
+            self.audioFile = file;
+            self.audio = file ? [[AVAudioPlayer alloc] initWithContentsOfURL:file error:NULL] : nil;
+            self.audio.delegate = self;
+            if (self.audio) {
+                [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
+                [[AVAudioSession sharedInstance] setActive:YES error:NULL];
+            }
+            if (self.audio && [self.audio play]) self.summary = self.trackTitle;
+            else {
+                [self clearAudio];
+                self.summary = @"Não foi possível tocar · busque outra música";
+            }
+            if (self.didUpdate) self.didUpdate();
+        });
+    }];
+    [self.download resume];
+}
+
+- (void)togglePlayback
+{
+    if (self.audio.isPlaying) [self.audio pause];
+    else if (self.audio) [self.audio play];
+    if (self.didUpdate) self.didUpdate();
+}
+
+- (void)pause
+{
+    if (self.download) {
+        self.generation++;
+        [self.download cancel];
+        self.download = nil;
+        self.summary = @"Pesquisar música · Audius";
+    }
+    if (self.audio.isPlaying) [self.audio pause];
+    if (self.didUpdate) self.didUpdate();
+}
+
+- (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)success
+{
+    if (player != self.audio) return;
+    [self clearAudio];
+    self.summary = success ? @"Pesquisar música · Audius" : @"Não foi possível tocar · busque outra música";
+    if (self.didUpdate) self.didUpdate();
+}
+
+- (void)audioPlayerDecodeErrorDidOccur:(AVAudioPlayer *)player error:(__unused NSError *)error
+{
+    [self audioPlayerDidFinishPlaying:player successfully:NO];
+}
+@end
