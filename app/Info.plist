@@ -9,8 +9,16 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Central da Casa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3.0</string>
-    <key>CFBundleVersion</key><string>4</string>
+    <key>CFBundleShortVersionString</key><string>0.3.1</string>
+    <key>CFBundleVersion</key><string>5</string>
+    <!-- Allow custom certificate validation for the weather host only. Requests still use HTTPS. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSExceptionDomains</key>
+        <dict><key>api.open-meteo.com</key><dict>
+            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        </dict></dict>
+    </dict>
     <key>NSLocationWhenInUseUsageDescription</key><string>Usa sua localização aproximada para consultar o clima da região enquanto a Central estiver aberta.</string>
     <key>NSCalendarsUsageDescription</key><string>Mostra os compromissos do calendário que você escolher.</string>
     <key>NSPhotoLibraryUsageDescription</key><string>Adiciona ao carrossel as fotos que você selecionar.</string>

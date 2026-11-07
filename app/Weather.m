@@ -1,8 +1,10 @@
 #import "Weather.h"
 #import <CoreLocation/CoreLocation.h>
 #import <QuartzCore/QuartzCore.h>
+#import <Security/Security.h>
 #import <math.h>
 
+static NSString *const WeatherHost = @"api.open-meteo.com";
 static NSString *const LocalWeatherPreference = @"useLocalWeather";
 
 typedef NS_ENUM(NSInteger, WeatherSky) {
@@ -157,6 +159,54 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
 }
 @end
 
+// iOS 9 predates the ISRG trust roots. Add them only to the weather session,
+// preserving TLS, hostname, validity and certificate-chain validation.
+@interface WeatherTransport : NSObject <NSURLSessionTaskDelegate>
+@end
+
+@implementation WeatherTransport
+- (void)URLSession:(__unused NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+    completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *))completion
+{
+    NSURLProtectionSpace *space = challenge.protectionSpace;
+    if (![space.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust] ||
+        ![space.host isEqualToString:WeatherHost] || !space.serverTrust) {
+        completion(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+        return;
+    }
+
+    NSMutableArray *anchors = [NSMutableArray arrayWithCapacity:2];
+    for (NSString *name in @[@"ISRG-Root-X1", @"ISRG-Root-X2"]) {
+        NSURL *url = [[NSBundle mainBundle] URLForResource:name withExtension:@"der"];
+        NSData *data = url ? [NSData dataWithContentsOfURL:url] : nil;
+        if (!data) continue;
+        SecCertificateRef certificate = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)data);
+        if (certificate) [anchors addObject:CFBridgingRelease(certificate)];
+    }
+
+    SecTrustRef trust = space.serverTrust;
+    SecPolicyRef policy = SecPolicyCreateSSL(true, (__bridge CFStringRef)WeatherHost);
+    OSStatus policyStatus = SecTrustSetPolicies(trust, policy);
+    CFRelease(policy);
+    SecTrustResultType result = kSecTrustResultInvalid;
+    BOOL valid = policyStatus == errSecSuccess
+        && SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)anchors) == errSecSuccess
+        && SecTrustSetAnchorCertificatesOnly(trust, false) == errSecSuccess
+        && SecTrustEvaluate(trust, &result) == errSecSuccess
+        && (result == kSecTrustResultUnspecified || result == kSecTrustResultProceed);
+    if (valid) completion(NSURLSessionAuthChallengeUseCredential, [NSURLCredential credentialForTrust:trust]);
+    else completion(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+}
+
+- (void)URLSession:(__unused NSURLSession *)session task:(__unused NSURLSessionTask *)task
+    willPerformHTTPRedirection:(__unused NSHTTPURLResponse *)response newRequest:(__unused NSURLRequest *)request
+    completionHandler:(void (^)(NSURLRequest *))completion
+{
+    // Never forward the location request to another URL or protocol.
+    completion(nil);
+}
+@end
+
 @interface LocalWeather () <CLLocationManagerDelegate>
 @property(nonatomic, strong) SkyView *skyView;
 @property(nonatomic, weak) UILabel *label;
@@ -183,7 +233,8 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
         _skyView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _skyView.userInteractionEnabled = NO;
         [backdrop insertSubview:_skyView atIndex:0];
-        _session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration]];
+        _session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration]
+            delegate:[[WeatherTransport alloc] init] delegateQueue:nil];
         _locationManager = [[CLLocationManager alloc] init];
         _locationManager.delegate = self;
         _locationManager.desiredAccuracy = kCLLocationAccuracyKilometer;
@@ -311,8 +362,8 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
 
     // Send only the nearest tenth of a degree (~11 km between latitude grid points).
     NSString *endpoint = [NSString stringWithFormat:
-        @"https://api.open-meteo.com/v1/forecast?latitude=%.1f&longitude=%.1f&current=temperature_2m,weather_code,is_day",
-        location.coordinate.latitude, location.coordinate.longitude];
+        @"https://%@/v1/forecast?latitude=%.1f&longitude=%.1f&current=temperature_2m,weather_code,is_day",
+        WeatherHost, location.coordinate.latitude, location.coordinate.longitude];
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:endpoint]
         cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];
     NSUInteger requestID = self.requestID;
