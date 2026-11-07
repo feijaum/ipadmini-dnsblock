@@ -26,7 +26,7 @@ done
 flags=("${arch_flags[@]}" -isysroot "$sdk" "-miphoneos-version-min=$min_version" -O2 -Wall -Wextra)
 if [[ -n "${IOS_LINKER:-}" ]]; then
     flags+=(--target="armv7-apple-ios$min_version" "-fuse-ld=$IOS_LINKER"
-        -mlinker-version=609 -Wl,-segalign,4000 -Wl,-no_data_const)
+        -Werror=unguarded-availability -mlinker-version=609 -Wl,-segalign,4000 -Wl,-no_data_const)
 fi
 "$clang" "${flags[@]}" -std=c99 -pthread src/dnsblock.c -o "$package/usr/libexec/ipadmini-dnsblock"
 "$clang" "${flags[@]}" -fobjc-arc -fblocks -framework UIKit -framework Foundation app/main.m -o "$app/DNSBlock"
