@@ -1,9 +1,9 @@
 Package: com.feijaum.ipadminidnsblock
 Name: DNSBlock Legacy — Central da Casa
-Version: 0.2.1
+Version: 0.3.0
 Architecture: iphoneos-arm
 Maintainer: feijaum
 Section: Networking
 Depends: firmware (>= 8.0), firmware (<< 11.0)
-Description: Painel de relógio, agenda e fotos com serviço DNS local integrado para iOS legado com jailbreak.
+Description: Painel de relógio, clima, agenda e fotos com serviço DNS local integrado para iOS legado com jailbreak.
 Homepage: https://github.com/feijaum/ipadmini-dnsblock

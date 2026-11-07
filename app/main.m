@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import "Weather.h"
 #import <EventKit/EventKit.h>
 #import <arpa/inet.h>
 #import <errno.h>
@@ -98,6 +99,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UILabel *brand;
 @property(nonatomic, strong) UILabel *clock;
 @property(nonatomic, strong) UILabel *date;
+@property(nonatomic, strong) UILabel *weatherLabel;
+@property(nonatomic, strong) LocalWeather *weather;
 @property(nonatomic, strong) UILabel *agendaHeading;
 @property(nonatomic, strong) UILabel *agenda;
 @property(nonatomic, strong) UILabel *photoHeading;
@@ -139,7 +142,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.settingsButton = Button(self.view, @"⚙  Ajustes", self, @selector(showSettings));
     self.settingsButton.accessibilityLabel = @"Configurações";
 
-    self.clockCard = Card(self.view, 0x1c2d43);
+    self.clockCard = Card(self.view, 0x131f33);
+    self.clockCard.backgroundColor = [self.clockCard.backgroundColor colorWithAlphaComponent:0.44];
     self.clock = Label(self.clockCard, 154, @"HelveticaNeue-Light", 0xf2f7ff);
     self.clock.textAlignment = NSTextAlignmentCenter;
     self.clock.adjustsFontSizeToFitWidth = YES;
@@ -147,6 +151,10 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.date = Label(self.clockCard, 22, @"HelveticaNeue", 0xb5cce7);
     self.date.textAlignment = NSTextAlignmentCenter;
     self.date.adjustsFontSizeToFitWidth = YES;
+    self.weatherLabel = Label(self.clockCard, 16, @"HelveticaNeue-Medium", 0xe7f3ff);
+    self.weatherLabel.textAlignment = NSTextAlignmentCenter;
+    self.weatherLabel.adjustsFontSizeToFitWidth = YES;
+    self.weather = [[LocalWeather alloc] initWithBackdrop:self.view label:self.weatherLabel];
 
     self.agendaCard = Card(self.view, 0x1a2637);
     self.agendaHeading = Label(self.agendaCard, 13, @"HelveticaNeue-Medium", 0x9adfce);
@@ -212,8 +220,11 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
         self.agendaCard.frame = CGRectMake(padding, top + clockHeight + gap, inner, agendaHeight);
         self.photoCard.frame = CGRectMake(padding, CGRectGetMaxY(self.agendaCard.frame) + gap, inner, remainder - agendaHeight - gap);
     }
-    self.clock.frame = CGRectMake(12, clockHeight * 0.03, inner - 24, clockHeight * 0.73);
-    self.date.frame = CGRectMake(12, clockHeight * 0.75, inner - 24, clockHeight * 0.19);
+    CGFloat clockFaceHeight = clockHeight * 0.62;
+    self.clock.font = [UIFont fontWithName:@"HelveticaNeue-Light" size:MIN(154, clockFaceHeight * 0.84)];
+    self.clock.frame = CGRectMake(12, clockHeight * 0.04, inner - 24, clockFaceHeight);
+    self.date.frame = CGRectMake(12, clockHeight * 0.66, inner - 24, clockHeight * 0.16);
+    self.weatherLabel.frame = CGRectMake(12, clockHeight * 0.82, inner - 24, clockHeight * 0.14);
     CGFloat agendaWidth = self.agendaCard.bounds.size.width;
     CGFloat agendaHeight = self.agendaCard.bounds.size.height;
     self.agendaHeading.frame = CGRectMake(16, 10, agendaWidth - 32, 20);
@@ -235,6 +246,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)resume
 {
+    [self.weather resume];
     [self updateClock];
     [self refreshStatus];
     [self updateAgenda];
@@ -245,6 +257,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)pause
 {
+    [self.weather pause];
     [self.timer invalidate];
     self.timer = nil;
 }
@@ -458,17 +471,42 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)confirmLocalWeather
+{
+    UIAlertController *prompt = [UIAlertController alertControllerWithTitle:@"Clima da sua região"
+        message:@"A Central usa a localização apenas enquanto está aberta. Se você ativar, envia uma posição aproximada à Open-Meteo para consultar o clima, sem usar sua conta Google."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [prompt addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    [prompt addAction:[UIAlertAction actionWithTitle:@"Ativar clima" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self.weather enable];
+    }]];
+    [self presentViewController:prompt animated:YES completion:nil];
+}
+
 - (void)showSettings
 {
     NSString *detail = self.status ? [NSString stringWithFormat:
         @"DNS: %@\nIP: %@\nConsultas: %@  ·  Bloqueadas: %@\n\nAo desligar o filtro, o iPad continua respondendo como DNS.",
         self.serviceMessage, self.status[@"ip"], self.status[@"queries"], self.status[@"blocked"]]
         : @"Serviço DNS indisponível. Confira o Wi-Fi e se o jailbreak está ativo.";
+    detail = [detail stringByAppendingString:@"\n\nDados meteorológicos: Open-Meteo."];
     UIAlertController *settings = [UIAlertController alertControllerWithTitle:@"Configurações" message:detail
         preferredStyle:UIAlertControllerStyleActionSheet];
     [settings addAction:[UIAlertAction actionWithTitle:@"Atualizar estado do DNS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self refreshStatus];
     }]];
+    if (self.weather.enabled) {
+        [settings addAction:[UIAlertAction actionWithTitle:@"Atualizar clima local" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self.weather enable];
+        }]];
+        [settings addAction:[UIAlertAction actionWithTitle:@"Desativar clima local" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self.weather disable];
+        }]];
+    } else {
+        [settings addAction:[UIAlertAction actionWithTitle:@"Ativar clima local" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self confirmLocalWeather];
+        }]];
+    }
     [settings addAction:[UIAlertAction actionWithTitle:@"Escolher calendário da família" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self chooseCalendar];
     }]];

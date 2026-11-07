@@ -31,8 +31,14 @@ fi
 "$clang" "${flags[@]}" -std=c99 -pthread src/dnsblock.c -o "$package/usr/libexec/ipadmini-dnsblock"
 # The iOS 8 runtime provides the ARC and Foundation features used here.
 # Pass ARC to compilation only, so Clang does not force-load libarclite.
-"$clang" "${flags[@]}" -fobjc-arc -fblocks -c app/main.m -o "$build/app.o"
-"$clang" "${flags[@]}" "$build/app.o" -framework UIKit -framework Foundation -framework EventKit -framework QuartzCore -framework CoreGraphics -lobjc -o "$app/DNSBlock"
+objects=()
+for source in app/main.m app/Weather.m; do
+    object="$build/$(basename "$source" .m).o"
+    "$clang" "${flags[@]}" -fobjc-arc -fblocks -c "$source" -o "$object"
+    objects+=("$object")
+done
+"$clang" "${flags[@]}" "${objects[@]}" -framework UIKit -framework Foundation -framework EventKit \
+    -framework QuartzCore -framework CoreGraphics -framework CoreLocation -framework CFNetwork -lobjc -o "$app/DNSBlock"
 "$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
 "$ldid" -S "$app/DNSBlock"
 
