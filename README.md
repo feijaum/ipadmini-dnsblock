@@ -2,7 +2,11 @@
 
 Reaproveite um iPad ou iPhone antigo como bloqueador de anúncios e rastreadores por DNS na rede de casa. O projeto começou com o iPad mini de primeira geração. A proposta é dar uma função útil a aparelhos que perderam suporte a apps modernos e facilitar a adaptação pela comunidade.
 
-**Status da v0.1.0.** O serviço DNS passou pelos testes em Linux. A compilação e a instalação no iOS, assim como o funcionamento com a tela bloqueada, ainda precisam ser validados. Use a primeira instalação para testar com um único cliente.
+**Status da v0.1.0.** O serviço DNS passou pelos testes em Linux. Os pacotes ARMv7 foram compilados e verificados com iOS 8.0 como mínimo. A instalação no aparelho e o funcionamento com a tela bloqueada ainda precisam ser testados.
+
+## Download da prévia
+
+Baixe o [serviço DNS (.deb)](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.1.0-ios.1/dnsblock-servico-0.1.0.deb) e o [painel (.ipa)](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.1.0-ios.1/dnsblock-painel-0.1.0.ipa) na [prévia ARMv7 do GitHub](https://github.com/feijaum/ipadmini-dnsblock/releases/tag/v0.1.0-ios.1). Use o jailbreak ativo para instalar o serviço e um instalador de IPA compatível com AppSync Unified para instalar o painel. No primeiro teste, configure somente um cliente para usar o DNS do iPad.
 
 ## Como funciona
 
