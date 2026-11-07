@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/ios-preview.yml
+      - scripts/build-ios.sh
+      - scripts/verify-ios-armv7.py
 
 permissions:
   contents: read

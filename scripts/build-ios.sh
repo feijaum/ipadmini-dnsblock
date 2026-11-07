@@ -29,7 +29,10 @@ if [[ -n "${IOS_LINKER:-}" ]]; then
         -Werror=unguarded-availability -mlinker-version=609 -Wl,-segalign,4000 -Wl,-no_data_const)
 fi
 "$clang" "${flags[@]}" -std=c99 -pthread src/dnsblock.c -o "$package/usr/libexec/ipadmini-dnsblock"
-"$clang" "${flags[@]}" -fobjc-arc -fblocks -framework UIKit -framework Foundation app/main.m -o "$app/DNSBlock"
+# The iOS 8 runtime provides the ARC and Foundation features used here.
+# Pass ARC to compilation only, so Clang does not force-load libarclite.
+"$clang" "${flags[@]}" -fobjc-arc -fblocks -c app/main.m -o "$build/app.o"
+"$clang" "${flags[@]}" "$build/app.o" -framework UIKit -framework Foundation -lobjc -o "$app/DNSBlock"
 "$ldid" -S "$package/usr/libexec/ipadmini-dnsblock"
 "$ldid" -S "$app/DNSBlock"
 
