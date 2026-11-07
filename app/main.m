@@ -104,6 +104,9 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) LocalWeather *weather;
 @property(nonatomic, strong) UILabel *agendaHeading;
 @property(nonatomic, strong) UILabel *agenda;
+@property(nonatomic, strong) UILabel *legendHeading;
+@property(nonatomic, strong) UIScrollView *legendScroll;
+@property(nonatomic, copy) NSArray *calendarCells;
 @property(nonatomic, strong) UILabel *photoHeading;
 @property(nonatomic, strong) UILabel *photoHint;
 @property(nonatomic, strong) UIImageView *photo;
@@ -118,6 +121,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, copy) NSString *serviceMessage;
 @property(nonatomic) BOOL busy;
 @property(nonatomic) NSUInteger photoIndex;
+@property(nonatomic) BOOL showingDrivePhoto;
+@property(nonatomic) NSTimeInterval lastPhotoChange;
 @property(nonatomic, strong) NSTimer *timer;
 @end
 
@@ -160,8 +165,26 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
     self.agendaCard = Card(self.view, 0x1a2637);
     self.agendaHeading = Label(self.agendaCard, 13, @"HelveticaNeue-Medium", 0x9adfce);
-    self.agendaHeading.text = @"PRÓXIMOS COMPROMISSOS";
-    self.agenda = Label(self.agendaCard, 16, @"HelveticaNeue", 0xe9f1ff);
+    NSMutableArray *cells = [NSMutableArray arrayWithCapacity:49];
+    NSArray *weekdays = @[@"D", @"S", @"T", @"Q", @"Q", @"S", @"S"];
+    for (NSUInteger index = 0; index < 49; index++) {
+        UILabel *cell = Label(self.agendaCard, 15, @"HelveticaNeue-Medium", 0xe9f1ff);
+        cell.textAlignment = NSTextAlignmentCenter;
+        cell.layer.cornerRadius = 5;
+        cell.clipsToBounds = YES;
+        if (index < 7) {
+            cell.text = weekdays[index];
+            cell.textColor = Color(0x9fb3ce);
+        }
+        [cells addObject:cell];
+    }
+    self.calendarCells = cells;
+    self.legendHeading = Label(self.agendaCard, 12, @"HelveticaNeue-Medium", 0x9adfce);
+    self.legendHeading.text = @"DATAS COMEMORATIVAS";
+    self.legendHeading.adjustsFontSizeToFitWidth = YES;
+    self.legendScroll = [[UIScrollView alloc] init];
+    [self.agendaCard addSubview:self.legendScroll];
+    self.agenda = Label(self.legendScroll, 14, @"HelveticaNeue", 0xe9f1ff);
     self.agenda.numberOfLines = 0;
 
     self.photoCard = Card(self.view, 0x223247);
@@ -181,7 +204,9 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.photoHint.adjustsFontSizeToFitWidth = YES;
     self.drivePhotos = [[DrivePhotos alloc] init];
     __weak HomePanel *panel = self;
-    self.drivePhotos.didUpdate = ^{ [panel nextPhoto]; };
+    self.drivePhotos.didUpdate = ^{
+        if (!panel.showingDrivePhoto || !panel.drivePhotos.hasAlbum) [panel nextPhoto];
+    };
 
     self.clockFormat = [self formatter:@"HH:mm"];
     self.dateFormat = [self formatter:@"EEEE, d 'de' MMMM"];
@@ -215,15 +240,15 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
     CGFloat top = buttonY + 44 + gap;
     CGFloat available = height - top - padding;
-    CGFloat clockHeight = floor(available * (landscape ? 0.55 : 0.43));
+    CGFloat clockHeight = floor(available * (landscape ? 0.46 : 0.39));
     self.clockCard.frame = CGRectMake(padding, top, inner, clockHeight);
     CGFloat remainder = available - clockHeight - gap;
     if (landscape) {
-        CGFloat column = floor((inner - gap) / 2);
+        CGFloat column = floor((inner - gap) * 0.55);
         self.agendaCard.frame = CGRectMake(padding, top + clockHeight + gap, column, remainder);
         self.photoCard.frame = CGRectMake(padding + column + gap, top + clockHeight + gap, inner - column - gap, remainder);
     } else {
-        CGFloat agendaHeight = floor((remainder - gap) * 0.46);
+        CGFloat agendaHeight = floor((remainder - gap) * 0.52);
         self.agendaCard.frame = CGRectMake(padding, top + clockHeight + gap, inner, agendaHeight);
         self.photoCard.frame = CGRectMake(padding, CGRectGetMaxY(self.agendaCard.frame) + gap, inner, remainder - agendaHeight - gap);
     }
@@ -235,7 +260,21 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     CGFloat agendaWidth = self.agendaCard.bounds.size.width;
     CGFloat agendaHeight = self.agendaCard.bounds.size.height;
     self.agendaHeading.frame = CGRectMake(16, 10, agendaWidth - 32, 20);
-    self.agenda.frame = CGRectMake(16, 31, agendaWidth - 32, MAX(0, agendaHeight - 38));
+    CGFloat gridWidth = floor((agendaWidth - 38) * 0.56);
+    CGFloat cellWidth = gridWidth / 7;
+    CGFloat cellHeight = MIN(32, MAX(1, (agendaHeight - 46) / 7));
+    [self.calendarCells enumerateObjectsUsingBlock:^(UILabel *cell, NSUInteger index, __unused BOOL *stop) {
+        cell.frame = CGRectMake(14 + (index % 7) * cellWidth, 33 + (index / 7) * cellHeight,
+                                MAX(1, cellWidth - 2), MAX(1, cellHeight - 2));
+        cell.font = [UIFont fontWithName:@"HelveticaNeue-Medium" size:MAX(8, MIN(15, cellHeight * 0.75))];
+    }];
+    CGFloat legendX = gridWidth + 24;
+    CGFloat legendWidth = MAX(1, agendaWidth - legendX - 12);
+    self.legendHeading.frame = CGRectMake(legendX, 35, legendWidth, 18);
+    self.legendScroll.frame = CGRectMake(legendX, 56, legendWidth, MAX(1, agendaHeight - 65));
+    CGFloat textHeight = [self.agenda sizeThatFits:CGSizeMake(legendWidth, CGFLOAT_MAX)].height;
+    self.agenda.frame = CGRectMake(0, 0, legendWidth, textHeight);
+    self.legendScroll.contentSize = CGSizeMake(legendWidth, textHeight);
     self.photo.frame = self.photoCard.bounds;
     CGFloat photoWidth = self.photoCard.bounds.size.width;
     CGFloat photoHeight = self.photoCard.bounds.size.height;
@@ -275,7 +314,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     [self updateClock];
     NSInteger seconds = (NSInteger)[NSDate date].timeIntervalSince1970;
-    if (seconds % 12 == 0) [self nextPhoto];
+    if ([NSProcessInfo processInfo].systemUptime - self.lastPhotoChange >= 5) [self nextPhoto];
     if (seconds % 60 == 0) {
         [self refreshStatus];
         [self updateAgenda];
@@ -339,25 +378,68 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 - (void)updateAgenda
 {
     NSString *identifier = [[NSUserDefaults standardUserDefaults] stringForKey:CalendarPreference];
-    EKCalendar *calendar = identifier ? [self.eventStore calendarWithIdentifier:identifier] : nil;
-    if (!calendar) {
-        self.agenda.text = @"Escolha um calendário em Ajustes.";
-        return;
-    }
+    EKCalendar *selected = identifier ? [self.eventStore calendarWithIdentifier:identifier] : nil;
+    NSCalendar *calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
     NSDate *now = [NSDate date];
-    NSDate *end = [now dateByAddingTimeInterval:30 * 24 * 60 * 60];
-    NSPredicate *predicate = [self.eventStore predicateForEventsWithStartDate:now endDate:end calendars:@[calendar]];
-    NSArray *events = [[self.eventStore eventsMatchingPredicate:predicate]
-        sortedArrayUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"startDate" ascending:YES]]];
-    NSMutableArray *lines = [NSMutableArray array];
-    for (EKEvent *event in events) {
-        if (lines.count == 3) break;
-        NSString *day = [self.eventFormat stringFromDate:event.startDate];
-        if (event.allDay) day = [day componentsSeparatedByString:@" "].firstObject;
-        NSString *title = [[event.title componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
-        [lines addObject:[NSString stringWithFormat:@"%@  ·  %@", day, title ?: @"Compromisso"]];
+    NSDate *monthStart = nil;
+    NSTimeInterval monthLength = 0;
+    if (![calendar rangeOfUnit:NSCalendarUnitMonth startDate:&monthStart interval:&monthLength forDate:now]) return;
+    NSDate *monthEnd = [monthStart dateByAddingTimeInterval:monthLength];
+    self.agendaHeading.text = [[[self formatter:@"MMMM 'de' yyyy"] stringFromDate:now] uppercaseString];
+
+    NSArray *events = @[];
+    if (selected) {
+        NSPredicate *predicate = [self.eventStore predicateForEventsWithStartDate:monthStart endDate:monthEnd calendars:@[selected]];
+        events = [[self.eventStore eventsMatchingPredicate:predicate]
+            sortedArrayUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"startDate" ascending:YES]]];
     }
-    self.agenda.text = lines.count ? [lines componentsJoinedByString:@"\n\n"] : @"Sem compromissos nos próximos 30 dias.";
+    NSRange days = [calendar rangeOfUnit:NSCalendarUnitDay inUnit:NSCalendarUnitMonth forDate:monthStart];
+    NSInteger offset = [calendar component:NSCalendarUnitWeekday fromDate:monthStart] - 1;
+    NSInteger today = [calendar component:NSCalendarUnitDay fromDate:now];
+
+    for (NSInteger index = 0; index < 42; index++) {
+        UILabel *cell = self.calendarCells[index + 7];
+        NSInteger day = index - offset + 1;
+        cell.text = nil;
+        cell.backgroundColor = [UIColor clearColor];
+        cell.accessibilityLabel = nil;
+        if (day < 1 || day > (NSInteger)days.length) continue;
+        NSDate *start = [calendar dateByAddingUnit:NSCalendarUnitDay value:day - 1 toDate:monthStart options:0];
+        NSDate *end = [calendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:start options:0];
+        BOOL hasEvent = NO;
+        BOOL commemorative = NO;
+        for (EKEvent *event in events) {
+            if ([event.startDate compare:end] != NSOrderedAscending) break;
+            if ([event.endDate compare:start] != NSOrderedDescending &&
+                [event.startDate compare:start] == NSOrderedAscending) continue;
+            hasEvent = YES;
+            commemorative |= event.allDay;
+        }
+        cell.text = [NSString stringWithFormat:@"%ld", (long)day];
+        cell.textColor = Color(day == today ? 0xffffff : (commemorative ? 0x9adfce : 0xe9f1ff));
+        cell.backgroundColor = day == today ? Color(0x236c60) :
+            (hasEvent ? Color(commemorative ? 0x1e4a45 : 0x2c4260) : [UIColor clearColor]);
+        cell.accessibilityLabel = [NSString stringWithFormat:@"%@%@%@", cell.text,
+            day == today ? @", hoje" : @"", commemorative ? @", data comemorativa" : (hasEvent ? @", evento" : @"")];
+    }
+
+    NSMutableArray *special = [NSMutableArray array];
+    NSMutableArray *other = [NSMutableArray array];
+    NSDateFormatter *dayFormat = [self formatter:@"dd/MM"];
+    for (EKEvent *event in events) {
+        NSDate *date = [event.startDate compare:monthStart] == NSOrderedAscending ? monthStart : event.startDate;
+        NSString *title = [[event.title componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
+        NSString *day = [(event.allDay ? dayFormat : self.eventFormat) stringFromDate:date];
+        [(event.allDay ? special : other) addObject:[NSString stringWithFormat:@"%@  ·  %@", day, title.length ? title : @"Compromisso"]];
+    }
+    NSString *legend = selected ? (special.count ? [special componentsJoinedByString:@"\n\n"] : @"Sem datas no mês.") :
+        @"Escolha um calendário em Ajustes.";
+    if (other.count) legend = [legend stringByAppendingFormat:@"\n\nOUTROS EVENTOS\n%@", [other componentsJoinedByString:@"\n\n"]];
+    if (![self.agenda.text isEqual:legend]) {
+        self.agenda.text = legend;
+        self.legendScroll.contentOffset = CGPointZero;
+        [self.view setNeedsLayout];
+    }
 }
 
 - (void)chooseCalendar
@@ -405,14 +487,22 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)nextPhoto
 {
+    self.lastPhotoChange = [NSProcessInfo processInfo].systemUptime;
+    UIImage *image = [self.drivePhotos nextImage];
+    if (!image && self.showingDrivePhoto && self.drivePhotos.hasAlbum) return;
+    self.showingDrivePhoto = image != nil;
     NSArray *photos = [[NSUserDefaults standardUserDefaults] arrayForKey:PhotosPreference];
-    self.photo.image = [self.drivePhotos nextImage];
-    self.photoHint.text = self.drivePhotos.connected ? self.drivePhotos.status : @"Adicione fotos em Ajustes";
-    if (!self.photo.image && photos.count) {
+    if (!image && photos.count) {
         self.photoIndex = self.photoIndex >= photos.count - 1 ? 0 : self.photoIndex + 1;
-        self.photo.image = [UIImage imageWithContentsOfFile:[self photoPath:photos[self.photoIndex]]];
+        image = [UIImage imageWithContentsOfFile:[self photoPath:photos[self.photoIndex]]];
     }
-    self.photoHint.hidden = self.photo.image != nil;
+    self.photoHint.text = self.drivePhotos.connected ? self.drivePhotos.status : @"Adicione fotos em Ajustes";
+    if (image != self.photo.image) {
+        [UIView transitionWithView:self.photo duration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.55
+            options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionBeginFromCurrentState
+            animations:^{ self.photo.image = image; } completion:nil];
+    }
+    self.photoHint.hidden = image != nil;
 }
 
 - (void)addPhoto

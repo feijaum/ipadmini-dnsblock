@@ -2,6 +2,7 @@
 
 @interface DrivePhotos : NSObject
 @property(nonatomic, readonly) BOOL connected;
+@property(nonatomic, readonly) BOOL hasAlbum;
 @property(nonatomic, readonly, copy) NSString *endpoint;
 @property(nonatomic, readonly, copy) NSString *status;
 @property(nonatomic, copy) void (^didUpdate)(void);

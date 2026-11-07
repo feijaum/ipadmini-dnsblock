@@ -1,6 +1,6 @@
 # Fotos da família no Google Drive
 
-A Central exibe até 20 das imagens mais novas de uma pasta privada do Drive. Ela consulta a pasta ao abrir e a cada cinco minutos enquanto está aberta. A edição e o envio ficam no app Drive de cada celular. A agenda continua sendo lida do calendário que você escolheu no iPad.
+A Central embaralha as fotos de uma pasta privada do Drive e percorre a lista antes de embaralhar de novo. A foto muda a cada cinco segundos quando a próxima já está disponível. O painel consulta a lista ao abrir e a cada cinco minutos enquanto está aberto. A edição e o envio ficam no app Drive de cada celular. A agenda continua sendo lida do calendário que você escolheu no iPad.
 
 ## 1. Prepare a pasta
 
@@ -20,8 +20,10 @@ A opção **Qualquer pessoa** permite que o iPad chegue à ponte sem login. As f
 
 ## 3. Conecte o carrossel
 
-1. Instale a Central da Casa 0.4.0 ou posterior e abra **Ajustes → Conectar fotos do Drive**.
+1. Instale a Central da Casa 0.4.1 ou posterior e abra **Ajustes → Conectar fotos do Drive**.
 2. Cole a URL `/exec` e a chave que salvou em `ACCESS_KEY`. Toque em **Conectar**.
 3. Confira o resultado no cartão de fotos e em **Ajustes**. Para buscar agora, use **Atualizar fotos do Drive**.
 
-O iPad recebe JPEG ou PNG. Para arquivos maiores ou em formatos como HEIC, a ponte usa a prévia do Drive quando ela está disponível. Se uma imagem não aparecer, tente enviar uma versão em JPEG. Adicione as fotos diretamente na pasta, sem subpastas. As imagens da fototeca servem de alternativa quando o carrossel não tem fotos do Drive disponíveis. Se a rede cair com a Central aberta, a última seleção do Drive continua em memória até o app ser fechado.
+O iPad recebe JPEG ou PNG. Para arquivos maiores ou em formatos como HEIC, a ponte usa a prévia do Drive quando ela está disponível. Se uma imagem não aparecer, tente enviar uma versão em JPEG. Adicione as fotos diretamente na pasta, sem subpastas. As imagens da fototeca servem de alternativa quando o carrossel não tem fotos do Drive disponíveis. Se a rede cair com a Central aberta, a foto exibida e as prévias já baixadas ficam em memória até o app ser fechado.
+
+Se você já publicou a ponte com o código da versão 0.4.0, substitua o `Code.gs` e em **Implantar → Gerenciar implantações → Editar** selecione **Nova versão**. Assim você mantém a URL e a chave que já configurou.
