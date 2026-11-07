@@ -109,11 +109,20 @@ totalBytesExpectedToWrite:(int64_t)expected
 }
 @end
 
+static NSURL *YouTubeTrackDirectory(void)
+{
+    NSURL *cache = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory
+        inDomains:NSUserDomainMask] firstObject];
+    return [cache URLByAppendingPathComponent:@"com.feijaum.ipadminidnsblock.youtube-audio" isDirectory:YES];
+}
+
 @interface YouTubeAudioTransport : MusicTransport <NSURLSessionDataDelegate>
-@property(nonatomic, strong) NSMutableData *audioData;
+@property(nonatomic, strong) NSURL *destination;
+@property(nonatomic, strong) NSOutputStream *stream;
 @property(nonatomic, strong) NSHTTPURLResponse *response;
-@property(nonatomic) BOOL oversized;
-@property(nonatomic, copy) void (^finished)(NSData *, NSHTTPURLResponse *, NSError *);
+@property(nonatomic, strong) NSError *writeError;
+@property(nonatomic) NSUInteger bytesWritten;
+@property(nonatomic, copy) void (^finished)(NSURL *, NSHTTPURLResponse *, NSError *);
 @end
 
 @implementation YouTubeAudioTransport
@@ -124,36 +133,59 @@ totalBytesExpectedToWrite:(int64_t)expected
     self.response = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
     NSString *mime = response.MIMEType.lowercaseString;
     BOOL audio = [mime hasPrefix:@"audio/"] || [mime isEqualToString:@"application/octet-stream"];
-    self.oversized = response.expectedContentLength > (int64_t)MaxTrackBytes;
-    BOOL accept = self.response.statusCode == 200 && audio && !self.oversized &&
+    BOOL accept = self.response.statusCode == 200 && audio &&
         AllowedMusicURL(response.URL) && CentralYouTubeMediaHost(response.URL.host);
-    if (accept) self.audioData = [[NSMutableData alloc] init];
+    if (accept && response.expectedContentLength > (int64_t)MaxTrackBytes) {
+        self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil];
+        accept = NO;
+    }
+    if (accept) {
+        self.stream = [NSOutputStream outputStreamWithURL:self.destination append:NO];
+        [self.stream open];
+        if (!self.stream || self.stream.streamStatus == NSStreamStatusError) {
+            self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotCreateFile userInfo:nil];
+            accept = NO;
+        }
+    }
     completion(accept ? NSURLSessionResponseAllow : NSURLSessionResponseCancel);
 }
 
 - (void)URLSession:(__unused NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data
 {
-    if (!self.audioData) return;
-    if (data.length > MaxTrackBytes - self.audioData.length) {
-        self.oversized = YES;
-        self.audioData = nil;
+    if (!self.stream || self.writeError) return;
+    if (data.length > MaxTrackBytes - self.bytesWritten) {
+        self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil];
         [task cancel];
         return;
     }
-    [self.audioData appendData:data];
+    const uint8_t *bytes = data.bytes;
+    NSUInteger remaining = data.length;
+    while (remaining) {
+        NSInteger written = [self.stream write:bytes maxLength:remaining];
+        if (written <= 0) {
+            self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotWriteToFile userInfo:nil];
+            [task cancel];
+            return;
+        }
+        remaining -= (NSUInteger)written;
+        bytes += written;
+        self.bytesWritten += (NSUInteger)written;
+    }
 }
 
 - (void)URLSession:(NSURLSession *)session task:(__unused NSURLSessionTask *)task didCompleteWithError:(NSError *)error
 {
-    if (self.oversized) {
-        error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil];
-    } else if (self.response && !self.audioData && error.code == NSURLErrorCancelled) {
-        // Report the HTTP status or the invalid response rather than our cancellation.
+    [self.stream close];
+    if (self.writeError) {
+        error = self.writeError;
+    } else if (self.response && !self.stream && error.code == NSURLErrorCancelled) {
+        // An HTTP error or invalid response was rejected before creating a file.
         error = nil;
     }
-    self.finished(error ? nil : self.audioData, self.response, error);
+    NSURL *file = !error && self.bytesWritten ? self.destination : nil;
+    if (!file) [[NSFileManager defaultManager] removeItemAtURL:self.destination error:NULL];
+    self.finished(file, self.response, error);
     self.finished = nil;
-    self.audioData = nil;
     [session finishTasksAndInvalidate];
 }
 @end
@@ -350,6 +382,8 @@ totalBytesExpectedToWrite:(int64_t)expected
     self = [super init];
     if (self) {
         _summary = @"Escolha uma faixa";
+        NSURL *directory = YouTubeTrackDirectory();
+        if (directory) [[NSFileManager defaultManager] removeItemAtURL:directory error:NULL];
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
         configuration.HTTPShouldSetCookies = NO;
         configuration.timeoutIntervalForRequest = 20;
@@ -438,12 +472,16 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
         if (code <= NSURLErrorSecureConnectionFailed && code >= NSURLErrorClientCertificateRequired)
             reason = [NSString stringWithFormat:@"TLS %ld", (long)code];
         else if (code == NSURLErrorNoPermissionsToReadFile) reason = @"sem acesso ao arquivo (-1102)";
+        else if (code == NSURLErrorCannotCreateFile || code == NSURLErrorCannotWriteToFile)
+            reason = @"não gravou o arquivo no iPad";
         else if (code == NSURLErrorDataLengthExceedsMaximum) reason = @"áudio acima do limite de 32 MB";
         else if (code == NSURLErrorCancelled) reason = @"conexão cancelada (-999)";
         else if (code == NSURLErrorTimedOut) reason = @"tempo esgotado (-1001)";
         else reason = [NSString stringWithFormat:@"rede %ld", (long)code];
     } else if (error) {
         reason = [NSString stringWithFormat:@"erro %ld", (long)error.code];
+    } else if (status == 403 && [stage isEqualToString:@"download"]) {
+        reason = @"YouTube recusou o áudio (403)";
     } else if (status && status != 200) {
         reason = [NSString stringWithFormat:@"HTTP %ld", (long)status];
     } else {
@@ -566,22 +604,34 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
 
 - (void)downloadYouTubeAudio:(NSURLRequest *)request
 {
+    NSURL *directory = YouTubeTrackDirectory();
+    if (!directory || ![[NSFileManager defaultManager] createDirectoryAtURL:directory
+        withIntermediateDirectories:YES attributes:nil error:NULL]) {
+        self.summary = @"YouTube · armazenamento\nNão abriu o cache do iPad";
+        if (self.didUpdate) self.didUpdate();
+        return;
+    }
     NSUInteger generation = self.generation;
-    // The system download task can fail with -1102 on legacy installations.
-    // Feed a bounded data response directly to the native AAC player.
+    // Use a data task so the app owns the temporary file on legacy iOS.
     NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     configuration.HTTPShouldSetCookies = NO;
     configuration.URLCache = nil;
     configuration.timeoutIntervalForResource = 120;
     YouTubeAudioTransport *transport = [[YouTubeAudioTransport alloc] init];
-    transport.finished = ^(NSData *data, NSHTTPURLResponse *response, NSError *error) {
+    NSString *filename = [[[NSUUID UUID] UUIDString] stringByAppendingPathExtension:@"m4a"];
+    transport.destination = [directory URLByAppendingPathComponent:filename];
+    transport.finished = ^(NSURL *file, NSHTTPURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.generation != generation) return;
+            if (self.generation != generation) {
+                if (file) [[NSFileManager defaultManager] removeItemAtURL:file error:NULL];
+                return;
+            }
             self.download = nil;
-            AVAudioPlayer *player = data.length ? [[AVAudioPlayer alloc] initWithData:data error:NULL] : nil;
+            self.audioFile = file;
+            AVAudioPlayer *player = file ? [[AVAudioPlayer alloc] initWithContentsOfURL:file error:NULL] : nil;
             [self startAudioPlayer:player];
             if (!self.audio) {
-                self.summary = data.length ? @"YouTube · player\nNão abriu o AAC" : YouTubeFailure(@"download", response, error);
+                self.summary = file ? @"YouTube · player\nNão abriu o AAC" : YouTubeFailure(@"download", response, error);
             }
             if (self.didUpdate) self.didUpdate();
         });
