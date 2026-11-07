@@ -1,6 +1,9 @@
 #import "YouTube.h"
+#import <arpa/inet.h>
 
 static NSString *const KeyPreference = @"youtubeDataAPIKey";
+static NSString *const ServerPreference = @"youtubeAudioServer";
+static NSString *const TokenPreference = @"youtubeAudioToken";
 
 static BOOL ValidIdentifier(NSString *value, NSUInteger min, NSUInteger max)
 {
@@ -10,25 +13,21 @@ static BOOL ValidIdentifier(NSString *value, NSUInteger min, NSUInteger max)
     return [value rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
 }
 
-static NSURL *EmbedURL(NSString *video, NSString *playlist)
+static NSURL *WatchURL(NSString *video, NSString *playlist)
 {
     BOOL hasVideo = ValidIdentifier(video, 11, 11);
     BOOL hasPlaylist = ValidIdentifier(playlist, 2, 150);
     if (!hasVideo && !hasPlaylist) return nil;
-    NSURLComponents *url = [[NSURLComponents alloc] init];
-    url.scheme = @"https";
-    url.host = @"www.youtube.com";
-    url.path = hasVideo ? [@"/embed/" stringByAppendingString:video] : @"/embed/videoseries";
-    NSMutableArray *parameters = [NSMutableArray arrayWithObject:[NSURLQueryItem queryItemWithName:@"playsinline" value:@"1"]];
-    if (hasPlaylist) {
-        [parameters addObject:[NSURLQueryItem queryItemWithName:@"listType" value:@"playlist"]];
-        [parameters addObject:[NSURLQueryItem queryItemWithName:@"list" value:playlist]];
-    }
+    NSURLComponents *url = [NSURLComponents componentsWithString:@"https://www.youtube.com"];
+    url.path = hasVideo ? @"/watch" : @"/playlist";
+    NSMutableArray *parameters = [NSMutableArray array];
+    if (hasVideo) [parameters addObject:[NSURLQueryItem queryItemWithName:@"v" value:video]];
+    if (hasPlaylist) [parameters addObject:[NSURLQueryItem queryItemWithName:@"list" value:playlist]];
     url.queryItems = parameters;
     return url.URL;
 }
 
-NSURL *CentralYouTubeEmbedURL(NSURL *link)
+NSURL *CentralYouTubeWatchURL(NSURL *link)
 {
     if (![link.scheme.lowercaseString isEqualToString:@"https"] || link.user || link.password ||
         (link.port && link.port.integerValue != 443)) return nil;
@@ -44,40 +43,38 @@ NSURL *CentralYouTubeEmbedURL(NSURL *link)
     NSArray *path = link.pathComponents;
     if ([host isEqualToString:@"youtu.be"] && path.count == 2) video = path[1];
     if (path.count == 3 && [@[@"embed", @"shorts", @"live"] containsObject:path[1]]) video = path[2];
-    return EmbedURL(video, playlist);
+    return WatchURL(video, playlist);
 }
 
-WKWebView *CentralYouTubePlayer(void)
+static NSURLComponents *LocalAudioServer(NSString *address)
 {
-    WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
-    configuration.allowsInlineMediaPlayback = YES;
-    configuration.mediaPlaybackRequiresUserAction = NO;
-    WKWebView *view = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
-    view.scrollView.scrollEnabled = NO;
-    return view;
+    if (!address.length) return nil;
+    NSURLComponents *url = [NSURLComponents componentsWithString:address];
+    struct in_addr ip;
+    if (![url.scheme isEqualToString:@"http"] || !url.host ||
+        inet_pton(AF_INET, url.host.UTF8String, &ip) != 1 ||
+        url.user || url.password || url.query || url.fragment ||
+        (url.path.length && ![url.path isEqualToString:@"/"]) ||
+        (url.port && (url.port.integerValue < 1 || url.port.integerValue > 65535))) return nil;
+    uint32_t host = ntohl(ip.s_addr);
+    BOOL private = (host >> 24) == 10 || (host >> 20) == 0xac1 || (host >> 16) == 0xc0a8;
+    return private ? url : nil;
 }
 
-void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
+NSURLRequest *CentralYouTubeAudioRequest(NSString *route, NSString *identifier)
 {
-    NSURL *resource = [[NSBundle mainBundle] URLForResource:@"youtube-player" withExtension:@"html"];
-    NSString *html = resource ? [NSString stringWithContentsOfURL:resource encoding:NSUTF8StringEncoding error:NULL] : nil;
-    if (!html) {
-        [view loadHTMLString:@"<meta charset='utf-8'><p>Não foi possível abrir o player do YouTube.</p>" baseURL:nil];
-        return;
-    }
-
-    // The base URL supplies the app identity as the iframe's HTTP Referer.
-    NSString *origin = [@"https://" stringByAppendingString:[[NSBundle mainBundle].bundleIdentifier lowercaseString]];
-    NSURLComponents *embed = [NSURLComponents componentsWithURL:embedURL resolvingAgainstBaseURL:NO];
-    embed.queryItems = [embed.queryItems arrayByAddingObjectsFromArray:@[
-        [NSURLQueryItem queryItemWithName:@"enablejsapi" value:@"1"],
-        [NSURLQueryItem queryItemWithName:@"origin" value:origin]
-    ]];
-    NSString *source = [embed.URL.absoluteString stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
-    source = [source stringByReplacingOccurrencesOfString:@"\"" withString:@"&quot;"];
-    html = [html stringByReplacingOccurrencesOfString:@"__AUTOPLAY__" withString:autoplay ? @"true" : @"false"];
-    html = [html stringByReplacingOccurrencesOfString:@"__EMBED_URL__" withString:source];
-    [view loadHTMLString:html baseURL:[NSURL URLWithString:origin]];
+    BOOL playlist = [route isEqualToString:@"playlist"];
+    if (!(playlist || [route isEqualToString:@"audio"]) ||
+        !ValidIdentifier(identifier, playlist ? 2 : 11, playlist ? 150 : 11)) return nil;
+    NSUserDefaults *settings = [NSUserDefaults standardUserDefaults];
+    NSURLComponents *url = LocalAudioServer([settings stringForKey:ServerPreference]);
+    NSString *token = [settings stringForKey:TokenPreference];
+    if (!url || !ValidIdentifier(token, 32, 128)) return nil;
+    url.path = [NSString stringWithFormat:@"/%@/%@", route, identifier];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url.URL
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:105];
+    [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+    return request;
 }
 
 @interface YouTubeSearch : UITableViewController <UISearchBarDelegate>
@@ -88,7 +85,7 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
 @property(nonatomic, strong) UILabel *message;
 @property(nonatomic, copy) NSArray *results;
 @property(nonatomic, strong) NSCache *images;
-@property(nonatomic, copy) void (^selection)(NSURL *);
+@property(nonatomic, copy) void (^selection)(NSURL *, NSString *);
 @property(nonatomic) NSUInteger generation;
 @end
 
@@ -104,7 +101,8 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
         style:UIBarButtonItemStyleDone target:self action:@selector(close)];
     self.navigationItem.leftBarButtonItems = @[
         [[UIBarButtonItem alloc] initWithTitle:@"Link" style:UIBarButtonItemStylePlain target:self action:@selector(enterLink)],
-        [[UIBarButtonItem alloc] initWithTitle:@"Chave" style:UIBarButtonItemStylePlain target:self action:@selector(configureKey)]
+        [[UIBarButtonItem alloc] initWithTitle:@"Chave" style:UIBarButtonItemStylePlain target:self action:@selector(configureKey)],
+        [[UIBarButtonItem alloc] initWithTitle:@"Servidor" style:UIBarButtonItemStylePlain target:self action:@selector(configureServer)]
     ];
     CGFloat width = self.tableView.bounds.size.width;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 92)];
@@ -135,7 +133,7 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
 
 - (void)showPrompt
 {
-    self.message.text = self.key.length ? @"Digite um nome, toque em Buscar e escolha o resultado para tocar." :
+    self.message.text = self.key.length ? @"Digite um nome e escolha o resultado para ouvir. Configure o conversor em Servidor." :
         @"Toque em Link para abrir um vídeo ou playlist.\nPara buscar pelo nome, configure a chave em Chave.";
 }
 
@@ -146,14 +144,20 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
-- (void)selectURL:(NSURL *)url
+- (void)selectURL:(NSURL *)url title:(NSString *)title
 {
     if (!url) return;
+    NSUserDefaults *settings = [NSUserDefaults standardUserDefaults];
+    if (!LocalAudioServer([settings stringForKey:ServerPreference]) ||
+        !ValidIdentifier([settings stringForKey:TokenPreference], 32, 128)) {
+        [self configureServer];
+        return;
+    }
     self.generation++;
     [self.task cancel];
-    void (^selection)(NSURL *) = self.selection;
+    void (^selection)(NSURL *, NSString *) = self.selection;
     [self.navigationController.presentingViewController dismissViewControllerAnimated:YES completion:^{
-        if (selection) selection(url);
+        if (selection) selection(url, title);
     }];
 }
 
@@ -171,13 +175,55 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
     __weak UIAlertController *weakForm = form;
     [form addAction:[UIAlertAction actionWithTitle:@"Abrir" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         NSString *text = [weakForm.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        NSURL *embed = text.length ? CentralYouTubeEmbedURL([NSURL URLWithString:text]) : nil;
-        if (embed) [self selectURL:embed];
+        NSURL *url = text.length ? CentralYouTubeWatchURL([NSURL URLWithString:text]) : nil;
+        if (url) [self selectURL:url title:@"YouTube"];
         else {
             self.results = nil;
             self.message.text = @"Link inválido. Use um vídeo ou playlist do YouTube.";
             [self.tableView reloadData];
         }
+    }]];
+    [self presentViewController:form animated:YES completion:nil];
+}
+
+- (void)configureServer
+{
+    NSUserDefaults *settings = [NSUserDefaults standardUserDefaults];
+    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"Servidor de áudio"
+        message:@"Informe o endereço HTTP na rede de casa e o token CENTRAL_YOUTUBE_TOKEN do servidor."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"http://192.168.0.10:8787";
+        field.text = [settings stringForKey:ServerPreference];
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Token do servidor";
+        field.text = [settings stringForKey:TokenPreference];
+        field.secureTextEntry = YES;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [form addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *weakForm = form;
+    [form addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSCharacterSet *spaces = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+        NSString *address = [weakForm.textFields.firstObject.text stringByTrimmingCharactersInSet:spaces];
+        NSString *token = [weakForm.textFields.lastObject.text stringByTrimmingCharactersInSet:spaces];
+        if (!LocalAudioServer(address) || !ValidIdentifier(token, 32, 128)) {
+            UIAlertController *invalid = [UIAlertController alertControllerWithTitle:@"Configuração inválida"
+                message:@"Use um endereço HTTP com IP privado e o token do servidor (32 a 128 caracteres)."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [invalid addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:invalid animated:YES completion:nil];
+            return;
+        }
+        [settings setObject:address forKey:ServerPreference];
+        [settings setObject:token forKey:TokenPreference];
+        NSIndexPath *row = self.tableView.indexPathForSelectedRow;
+        if (row) [self.tableView deselectRowAtIndexPath:row animated:YES];
     }]];
     [self presentViewController:form animated:YES completion:nil];
 }
@@ -241,10 +287,6 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
         [NSURLQueryItem queryItemWithName:@"relevanceLanguage" value:@"pt"],
         [NSURLQueryItem queryItemWithName:@"maxResults" value:@"20"]
     ]];
-    if (!playlists) {
-        [parameters addObject:[NSURLQueryItem queryItemWithName:@"videoEmbeddable" value:@"true"]];
-        [parameters addObject:[NSURLQueryItem queryItemWithName:@"videoSyndicated" value:@"true"]];
-    }
     endpoint.queryItems = parameters;
     endpoint.percentEncodedQuery = [endpoint.percentEncodedQuery stringByReplacingOccurrencesOfString:@"+" withString:@"%2B"];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:endpoint.URL
@@ -264,15 +306,15 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
                 NSDictionary *ids = item[@"id"];
                 NSDictionary *snippet = item[@"snippet"];
                 if (![ids isKindOfClass:[NSDictionary class]] || ![snippet isKindOfClass:[NSDictionary class]]) continue;
-                NSURL *embed = EmbedURL(ids[@"videoId"], ids[@"playlistId"]);
+                NSURL *url = WatchURL(ids[@"videoId"], ids[@"playlistId"]);
                 NSString *title = snippet[@"title"];
-                if (!embed || ![title isKindOfClass:[NSString class]]) continue;
+                if (!url || ![title isKindOfClass:[NSString class]]) continue;
                 NSString *channel = snippet[@"channelTitle"];
                 NSDictionary *thumbnails = snippet[@"thumbnails"];
                 NSDictionary *preview = [thumbnails isKindOfClass:[NSDictionary class]] ? thumbnails[@"default"] : nil;
                 NSString *image = [preview isKindOfClass:[NSDictionary class]] ? preview[@"url"] : nil;
                 [results addObject:@{@"title":title, @"channel":[channel isKindOfClass:[NSString class]] ? channel : @"YouTube",
-                    @"embed":embed, @"image":[image isKindOfClass:[NSString class]] ? image : @""}];
+                    @"url":url, @"image":[image isKindOfClass:[NSString class]] ? image : @""}];
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -324,14 +366,16 @@ void CentralYouTubeLoadPlayer(WKWebView *view, NSURL *embedURL, BOOL autoplay)
     return cell;
 }
 
-- (void)tableView:(__unused UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path
+- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path
 {
-    [self selectURL:self.results[path.row][@"embed"]];
+    [table deselectRowAtIndexPath:path animated:YES];
+    NSDictionary *result = self.results[path.row];
+    [self selectURL:result[@"url"] title:result[@"title"]];
 }
 
 @end
 
-UIViewController *CentralYouTubeSearch(NSURLSession *session, void (^selection)(NSURL *))
+UIViewController *CentralYouTubeSearch(NSURLSession *session, void (^selection)(NSURL *, NSString *))
 {
     YouTubeSearch *search = [[YouTubeSearch alloc] initWithStyle:UITableViewStylePlain];
     search.session = session;

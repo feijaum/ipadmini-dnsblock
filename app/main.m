@@ -145,8 +145,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) NSMutableArray *savedMusic;
 @property(nonatomic, strong) UIButton *musicSearchButton;
 @property(nonatomic, strong) UIButton *youtubeButton;
-@property(nonatomic, strong) UIButton *youtubeCloseButton;
-@property(nonatomic, strong) WKWebView *youtubeView;
+@property(nonatomic, strong) UIButton *musicStopButton;
 @property(nonatomic, strong) UIButton *musicToggleButton;
 @property(nonatomic, strong) NSDateFormatter *clockFormat;
 @property(nonatomic, strong) NSDateFormatter *dateFormat;
@@ -199,8 +198,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.musicHeading.text = @"MÚSICA";
     self.musicSearchButton = Button(self.musicBody, @"♫  Pesquisar música", self, @selector(searchMusic));
     self.youtubeButton = Button(self.musicBody, @"YouTube", self, @selector(openYouTubeSearch));
-    self.youtubeCloseButton = Button(self.musicBody, @"Fechar vídeo", self, @selector(closeYouTube));
-    self.youtubeCloseButton.hidden = YES;
+    self.musicStopButton = Button(self.musicBody, @"Parar", self, @selector(stopMusic));
     self.musicToggleButton = Button(self.musicBody, @"Tocar", self, @selector(toggleMusic));
     self.musicSummary = Label(self.musicBody, 14, @"HelveticaNeue-Medium", 0xe9f1ff);
     self.musicSummary.numberOfLines = 2;
@@ -388,66 +386,33 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     CGFloat width = self.musicCard.bounds.size.width;
     CGFloat height = self.musicCard.bounds.size.height;
-    BOOL video = self.youtubeView != nil;
-    CGFloat contentHeight = MAX(height, video ? 366 : 228);
+    BOOL controls = self.music.canStop;
+    CGFloat contentHeight = MAX(height, controls ? 276 : 228);
     self.musicBody.frame = self.musicCard.bounds;
     self.musicBody.contentSize = CGSizeMake(width, contentHeight);
     self.musicBody.scrollEnabled = contentHeight > height;
     CGFloat inset = 12;
     self.musicHeading.frame = CGRectMake(inset, 8, width - 2 * inset, 20);
     CGFloat buttonWidth = floor((width - 2 * inset - 6) / 2);
-    self.musicSearchButton.hidden = video;
-    self.musicSummary.hidden = video;
-    self.musicAddButton.hidden = video;
-    self.musicLinks.hidden = video;
-    self.musicToggleButton.hidden = video || !self.music.canToggle;
-    self.youtubeCloseButton.hidden = !video;
-    self.youtubeButton.frame = CGRectMake(video ? inset : inset + buttonWidth + 6, 34, buttonWidth, 42);
-    self.youtubeCloseButton.frame = CGRectMake(inset + buttonWidth + 6, 34, buttonWidth, 42);
-    if (video) {
-        self.youtubeView.frame = CGRectMake(inset, 82, width - 2 * inset, contentHeight - 86);
-        return;
-    }
     self.musicSearchButton.frame = CGRectMake(inset, 34, buttonWidth, 42);
-    CGFloat controlWidth = self.music.canToggle ? 64 : 0;
-    self.musicSummary.frame = CGRectMake(inset, 81, width - 2 * inset - controlWidth - (controlWidth ? 5 : 0), 42);
-    self.musicToggleButton.frame = CGRectMake(width - inset - controlWidth, 81, controlWidth, 42);
-    self.musicAddButton.frame = CGRectMake(inset, 129, width - 2 * inset, 42);
-    self.musicLinks.frame = CGRectMake(inset, 174, width - 2 * inset, contentHeight - 178);
+    self.youtubeButton.frame = CGRectMake(inset + buttonWidth + 6, 34, buttonWidth, 42);
+    self.musicSummary.frame = CGRectMake(inset, 81, width - 2 * inset, 42);
+    self.musicToggleButton.frame = CGRectMake(inset, 129, buttonWidth, 42);
+    self.musicStopButton.frame = self.music.canToggle
+        ? CGRectMake(inset + buttonWidth + 6, 129, buttonWidth, 42)
+        : CGRectMake(inset, 129, width - 2 * inset, 42);
+    CGFloat offset = controls ? 48 : 0;
+    self.musicAddButton.frame = CGRectMake(inset, 129 + offset, width - 2 * inset, 42);
+    self.musicLinks.frame = CGRectMake(inset, 174 + offset, width - 2 * inset, contentHeight - 178 - offset);
 }
 
 - (void)openYouTubeSearch
 {
-    [self closeYouTube];
     __weak HomePanel *panel = self;
-    UIViewController *search = [self.music youtubeControllerWithSelection:^(NSURL *url) {
-        [panel showYouTube:url];
+    UIViewController *search = [self.music youtubeControllerWithSelection:^(NSURL *url, NSString *title) {
+        [panel.music playYouTube:url title:title];
     }];
     [self presentViewController:search animated:YES completion:nil];
-}
-
-- (void)showYouTube:(NSURL *)url
-{
-    [self closeYouTube];
-    [self.music stopPlayback];
-    self.youtubeView = CentralYouTubePlayer();
-    [self.musicBody addSubview:self.youtubeView];
-    [self.musicBody setContentOffset:CGPointZero animated:NO];
-    [self layoutMusicCard];
-    // Leave autoplay to the user's tap when most of the player is below the fold.
-    CGFloat visibleVideo = self.musicCard.bounds.size.height - CGRectGetMinY(self.youtubeView.frame) - 80;
-    CGFloat videoHeight = self.youtubeView.bounds.size.height - 80;
-    CentralYouTubeLoadPlayer(self.youtubeView, url, visibleVideo > videoHeight / 2);
-}
-
-- (void)closeYouTube
-{
-    if (!self.youtubeView) return;
-    [self.youtubeView stopLoading];
-    [self.youtubeView removeFromSuperview];
-    self.youtubeView = nil;
-    [self layoutMusicCard];
-    [self.musicBody setContentOffset:CGPointZero animated:NO];
 }
 
 - (void)searchMusic
@@ -456,12 +421,14 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 }
 
 - (void)toggleMusic { [self.music togglePlayback]; }
+- (void)stopMusic { [self.music stopPlayback]; }
 
 - (void)updateMusicButtons
 {
     self.musicSummary.text = self.music.summary;
     [self.musicToggleButton setTitle:(self.music.playing ? @"Pausar" : @"Tocar") forState:UIControlStateNormal];
-    self.musicToggleButton.hidden = self.youtubeView != nil || !self.music.canToggle;
+    self.musicToggleButton.hidden = !self.music.canToggle;
+    self.musicStopButton.hidden = !self.music.canStop;
     [self.view setNeedsLayout];
 }
 
@@ -530,8 +497,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     [table deselectRowAtIndexPath:path animated:YES];
     NSURL *url = [NSURL URLWithString:self.savedMusic[path.row][@"url"]];
-    NSURL *embed = CentralYouTubeEmbedURL(url);
-    if (embed) [self showYouTube:embed];
+    NSURL *youtube = CentralYouTubeWatchURL(url);
+    if (youtube) [self.music playYouTube:youtube title:self.savedMusic[path.row][@"name"] ?: @"YouTube"];
     else if (MusicLinkService(url)) [[UIApplication sharedApplication] openURL:url];
 }
 
@@ -578,7 +545,6 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)pause
 {
-    [self closeYouTube];
     [self.weather pause];
     [self.drivePhotos pause];
     [self.timer invalidate];
