@@ -2,7 +2,8 @@
 
 NSURL *CentralYouTubeWatchURL(NSURL *link);
 BOOL CentralYouTubeMediaHost(NSString *host);
-NSURLRequest *CentralYouTubePlayerRequest(NSString *video);
+BOOL CentralYouTubePlayerHost(NSString *host);
+NSURLRequest *CentralYouTubePlayerRequest(NSString *video, BOOL fallback);
 NSURL *CentralYouTubeAudioURL(NSData *data);
 NSURLRequest *CentralYouTubePlaylistRequest(NSString *playlist);
 NSArray *CentralYouTubePlaylistItems(NSData *data);

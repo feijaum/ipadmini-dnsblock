@@ -1,6 +1,6 @@
 Package: com.feijaum.ipadminidnsblock
 Name: DNSBlock Legacy — Central da Casa
-Version: 0.4.9
+Version: 0.4.10
 Architecture: iphoneos-arm
 Maintainer: feijaum
 Section: Networking

@@ -11,7 +11,7 @@ static BOOL AllowedMusicHost(NSString *host)
     return [host hasSuffix:@".audius.co"] ||
         [host hasSuffix:@".r2.cloudflarestorage.com"] ||
         [host isEqualToString:@"www.googleapis.com"] || [host isEqualToString:@"i.ytimg.com"] ||
-        [host isEqualToString:@"www.youtube.com"] || CentralYouTubeMediaHost(host);
+        CentralYouTubePlayerHost(host) || CentralYouTubeMediaHost(host);
 }
 
 static BOOL AllowedMusicURL(NSURL *url)
@@ -90,8 +90,8 @@ static NSArray *BrazilianStations(void)
     NSString *origin = response.URL.host;
     BOOL allowed = AllowedMusicURL(request.URL) &&
         (CentralYouTubeMediaHost(origin) ? CentralYouTubeMediaHost(request.URL.host) :
-        ![origin isEqualToString:@"www.googleapis.com"] && ![origin isEqualToString:@"www.youtube.com"] &&
-        !CentralYouTubeMediaHost(request.URL.host) && ![request.URL.host isEqualToString:@"www.youtube.com"]);
+        ![origin isEqualToString:@"www.googleapis.com"] && !CentralYouTubePlayerHost(origin) &&
+        !CentralYouTubeMediaHost(request.URL.host) && !CentralYouTubePlayerHost(request.URL.host));
     completion(allowed ? request : nil);
 }
 
@@ -380,11 +380,25 @@ totalBytesExpectedToWrite:(int64_t)expected
     [self downloadAudio:[NSURLRequest requestWithURL:url] fromYouTube:NO];
 }
 
-- (NSString *)youtubeFailure:(NSError *)error
+static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NSError *error)
 {
-    if (error.code == NSURLErrorTimedOut) return @"O YouTube demorou demais · tente novamente";
-    if (error) return @"Falha na conexão com o YouTube";
-    return @"O YouTube não liberou áudio para esta faixa";
+    NSString *reason;
+    NSInteger status = response.statusCode;
+    if ([error.domain isEqualToString:NSURLErrorDomain]) {
+        NSInteger code = error.code;
+        if (code <= NSURLErrorSecureConnectionFailed && code >= NSURLErrorClientCertificateRequired)
+            reason = [NSString stringWithFormat:@"TLS %ld", (long)code];
+        else if (code == NSURLErrorCancelled) reason = @"conexão cancelada (-999)";
+        else if (code == NSURLErrorTimedOut) reason = @"tempo esgotado (-1001)";
+        else reason = [NSString stringWithFormat:@"rede %ld", (long)code];
+    } else if (error) {
+        reason = [NSString stringWithFormat:@"erro %ld", (long)error.code];
+    } else if (status && status != 200) {
+        reason = [NSString stringWithFormat:@"HTTP %ld", (long)status];
+    } else {
+        reason = [stage isEqualToString:@"link"] ? @"AAC indisponível" : @"arquivo de áudio inválido";
+    }
+    return [NSString stringWithFormat:@"YouTube · %@\n%@", stage, reason];
 }
 
 - (void)playYouTube:(NSURL *)url title:(NSString *)title
@@ -447,23 +461,33 @@ totalBytesExpectedToWrite:(int64_t)expected
 
 - (void)playYouTubeItem:(NSDictionary *)track
 {
-    NSURLRequest *request = CentralYouTubePlayerRequest(track[@"id"]);
+    self.trackTitle = [NSString stringWithFormat:@"%@ · YouTube", track[@"title"]];
+    self.summary = [NSString stringWithFormat:@"Buscando áudio de %@…", track[@"title"]];
+    [self lookupYouTubeAudio:track[@"id"] fallback:NO];
+}
+
+- (void)lookupYouTubeAudio:(NSString *)video fallback:(BOOL)fallback
+{
+    NSURLRequest *request = CentralYouTubePlayerRequest(video, fallback);
     if (!request) {
         self.summary = @"Link do YouTube inválido";
         if (self.didUpdate) self.didUpdate();
         return;
     }
-    self.trackTitle = [NSString stringWithFormat:@"%@ · YouTube", track[@"title"]];
-    self.summary = [NSString stringWithFormat:@"Buscando áudio de %@…", track[@"title"]];
     NSUInteger generation = self.generation;
     self.youtubeLookup = [self.session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+        NSInteger status = http.statusCode;
         NSURL *audio = !error && status == 200 ? CentralYouTubeAudioURL(data) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.generation != generation) return;
             self.youtubeLookup = nil;
             if (!audio) {
-                self.summary = [self youtubeFailure:error];
+                if (!fallback && (error || status == 404 || status >= 500)) {
+                    [self lookupYouTubeAudio:video fallback:YES];
+                    return;
+                }
+                self.summary = YouTubeFailure(@"link", http, error);
                 if (self.didUpdate) self.didUpdate();
                 return;
             }
@@ -488,10 +512,10 @@ totalBytesExpectedToWrite:(int64_t)expected
             [location getResourceValue:&sizeValue forKey:NSURLFileSizeKey error:NULL];
             size = sizeValue.unsignedIntegerValue;
         }
+        NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         NSString *mime = response.MIMEType.lowercaseString;
         BOOL allowed = AllowedMusicURL(response.URL) && (!youtube || CentralYouTubeMediaHost(response.URL.host));
-        if (!error && allowed && [response isKindOfClass:[NSHTTPURLResponse class]]
-            && [(NSHTTPURLResponse *)response statusCode] == 200 && size > 0 && size <= MaxTrackBytes
+        if (!error && allowed && http.statusCode == 200 && size > 0 && size <= MaxTrackBytes
             && ([mime hasPrefix:@"audio/"] || [mime isEqualToString:@"application/octet-stream"])) {
             NSString *name = [NSString stringWithFormat:@"central-music-%@.%@", [[NSUUID UUID] UUIDString], youtube ? @"m4a" : @"mp3"];
             NSURL *destination = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
@@ -513,7 +537,7 @@ totalBytesExpectedToWrite:(int64_t)expected
             if (self.audio && [self.audio play]) self.summary = self.trackTitle;
             else {
                 [self clearAudio];
-                self.summary = youtube ? [self youtubeFailure:error] :
+                self.summary = youtube ? (file ? @"YouTube · player\nNão abriu o AAC" : YouTubeFailure(@"download", http, error)) :
                     @"Não foi possível tocar · busque outra música";
             }
             if (self.didUpdate) self.didUpdate();

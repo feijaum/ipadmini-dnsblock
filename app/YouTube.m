@@ -48,11 +48,18 @@ BOOL CentralYouTubeMediaHost(NSString *host)
     return [host hasSuffix:@".googlevideo.com"] || [host isEqualToString:@"googlevideo.com"];
 }
 
-NSURLRequest *CentralYouTubePlayerRequest(NSString *video)
+BOOL CentralYouTubePlayerHost(NSString *host)
+{
+    return [host isEqualToString:@"youtubei.googleapis.com"] || [host isEqualToString:@"www.youtube.com"];
+}
+
+NSURLRequest *CentralYouTubePlayerRequest(NSString *video, BOOL fallback)
 {
     if (!ValidIdentifier(video, 11, 11)) return nil;
     NSString *version = @"21.08.3";
-    NSURL *url = [NSURL URLWithString:@"https://www.youtube.com/youtubei/v1/player?prettyPrint=false&noauth=1"];
+    NSString *host = fallback ? @"www.youtube.com" : @"youtubei.googleapis.com";
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
+        @"https://%@/youtubei/v1/player?prettyPrint=false&noauth=1", host]];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
         cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:18];
     request.HTTPMethod = @"POST";
