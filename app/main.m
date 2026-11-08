@@ -880,6 +880,12 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
         @"DNS: %@\nIP: %@\nConsultas: %@  ·  Bloqueadas: %@\n\nAo desligar o filtro, o iPad continua respondendo como DNS.",
         self.serviceMessage, self.status[@"ip"], self.status[@"queries"], self.status[@"blocked"]]
         : @"Serviço DNS indisponível. Confira o Wi-Fi e se o jailbreak está ativo.";
+    NSNumber *automaticDomains = self.status[@"automatic_domains"];
+    if ([automaticDomains isKindOfClass:[NSNumber class]]) {
+        NSString *list = automaticDomains.unsignedIntegerValue
+            ? [NSString stringWithFormat:@"%@ domínios", automaticDomains] : @"aguardando a primeira atualização";
+        detail = [detail stringByAppendingFormat:@"\nLista automática: %@", list];
+    }
     detail = [detail stringByAppendingFormat:@"\n\n%@\nDados meteorológicos: Open-Meteo.", self.drivePhotos.status];
     UIAlertController *settings = [UIAlertController alertControllerWithTitle:@"Configurações" message:detail
         preferredStyle:UIAlertControllerStyleActionSheet];

@@ -53,25 +53,54 @@ BOOL CentralYouTubePlayerHost(NSString *host)
     return [host isEqualToString:@"youtubei.googleapis.com"] || [host isEqualToString:@"www.youtube.com"];
 }
 
-NSURLRequest *CentralYouTubePlayerRequest(NSString *video, BOOL fallback)
+// Prefer the same audio client that Musike uses on iOS, then try two alternatives.
+static NSArray *PlaybackClients(void)
 {
-    if (!ValidIdentifier(video, 11, 11)) return nil;
-    NSString *version = @"21.08.3";
-    NSString *host = fallback ? @"www.youtube.com" : @"youtubei.googleapis.com";
+    return @[
+        @[@"VISIONOS", @"1.02", @"101"],
+        @[@"ANDROID_VR", @"1.60.19", @"28"],
+        @[@"IOS", @"21.08.3", @"5"]
+    ];
+}
+
+static NSURLRequest *PlaybackRequest(NSString *operation, NSArray *profile, NSString *video, NSString *visitor)
+{
+    NSString *agent = @"Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+    NSMutableDictionary *client = [@{
+        @"clientName":profile[0], @"clientVersion":profile[1], @"hl":@"pt", @"gl":@"BR",
+        @"platform":@"DESKTOP", @"userAgent":[agent stringByAppendingString:@",gzip(gfe)"]
+    } mutableCopy];
+    if (visitor.length) client[@"visitorData"] = visitor;
+    NSMutableDictionary *body = [@{@"context":@{@"client":client}} mutableCopy];
+    if (video) {
+        body[@"videoId"] = video;
+        body[@"playbackContext"] = @{@"contentPlaybackContext":@{@"html5Preference":@"HTML5_PREF_WANTS"}};
+    }
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
-        @"https://%@/youtubei/v1/player?prettyPrint=false&noauth=1", host]];
+        @"https://www.youtube.com/youtubei/v1/%@?prettyPrint=false&alt=json", operation]];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
-        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:18];
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:12];
     request.HTTPMethod = @"POST";
-    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{
-        @"videoId":video, @"context":@{@"client":@{
-            @"clientName":@"IOS", @"clientVersion":version, @"hl":@"en", @"gl":@"BR"
-        }}
-    } options:0 error:NULL];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    [request setValue:@"5" forHTTPHeaderField:@"X-YouTube-Client-Name"];
-    [request setValue:version forHTTPHeaderField:@"X-YouTube-Client-Version"];
+    [request setValue:profile[2] forHTTPHeaderField:@"X-YouTube-Client-Name"];
+    [request setValue:profile[1] forHTTPHeaderField:@"X-YouTube-Client-Version"];
+    [request setValue:@"2" forHTTPHeaderField:@"X-Goog-Api-Format-Version"];
+    [request setValue:@"https://www.youtube.com" forHTTPHeaderField:@"Origin"];
+    [request setValue:agent forHTTPHeaderField:@"User-Agent"];
     return request;
+}
+
+NSURLRequest *CentralYouTubeVisitorRequest(void)
+{
+    return PlaybackRequest(@"visitor_id", PlaybackClients()[0], nil, nil);
+}
+
+NSURLRequest *CentralYouTubePlayerRequest(NSString *video, NSString *visitor, NSUInteger attempt)
+{
+    NSArray *clients = PlaybackClients();
+    if (attempt >= clients.count || !ValidIdentifier(video, 11, 11)) return nil;
+    return PlaybackRequest(@"player", clients[attempt], video, visitor);
 }
 
 static NSDictionary *ResponseDictionary(NSData *data)
@@ -81,8 +110,16 @@ static NSDictionary *ResponseDictionary(NSData *data)
     return [json isKindOfClass:[NSDictionary class]] ? json : nil;
 }
 
-NSURL *CentralYouTubeAudioURL(NSData *data)
+NSString *CentralYouTubeVisitorData(NSData *data)
 {
+    id context = ResponseDictionary(data)[@"responseContext"];
+    id visitor = [context isKindOfClass:[NSDictionary class]] ? context[@"visitorData"] : nil;
+    return [visitor isKindOfClass:[NSString class]] && [visitor length] <= 1024 ? visitor : nil;
+}
+
+NSURL *CentralYouTubeAudioURL(NSData *data, int64_t *contentLength)
+{
+    *contentLength = 0;
     id streaming = ResponseDictionary(data)[@"streamingData"];
     if (![streaming isKindOfClass:[NSDictionary class]]) return nil;
     id formats = streaming[@"adaptiveFormats"];
@@ -104,6 +141,9 @@ NSURL *CentralYouTubeAudioURL(NSData *data)
         if (rank > bestRank) {
             bestRank = rank;
             candidate = url;
+            id length = format[@"contentLength"];
+            *contentLength = [length isKindOfClass:[NSString class]] || [length isKindOfClass:[NSNumber class]] ?
+                MAX(0, [length longLongValue]) : 0;
         }
     }
     return candidate;

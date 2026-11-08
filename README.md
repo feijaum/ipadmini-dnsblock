@@ -4,9 +4,9 @@ Reaproveite um iPad ou iPhone antigo como bloqueador de anúncios e rastreadores
 
 ## Download
 
-A **Central da Casa 0.4.12** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
+A **Central da Casa 0.4.14** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
 
-1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.4.12-ios.1/dnsblock-central-0.4.12.deb).
+1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.4.14-ios.1/dnsblock-central-0.4.14.deb).
 2. Com o Carbon ativo, abra o arquivo no **Filza** e toque em **Install**. O pacote atualiza o serviço DNS existente e preserva suas configurações. O ícone da Central é um relógio em fundo azul-escuro. Se ele não aparecer, confira se o Cydia tem o pacote **UIKit Tools** instalado, atualize o cache de ícones com `su mobile -c uicache` em um terminal root e faça um respring.
 3. Abra **Central da Casa**. Se você instalou o painel antigo por IPA, ele continua aparecendo como **DNSBlock**. Toque em **Bloqueio** para alternar o filtro. O iPad continua resolvendo DNS com o filtro desligado. O botão **Ajustes** mostra o IP e os contadores, permite selecionar a agenda e adicionar fotos.
 4. Escolha um calendário disponível no app **Calendário** do iPad. Se a conta Google estiver sincronizada com o iOS, selecione o calendário da família. Adicione as fotos pela fototeca do iPad. Para sincronizar uma pasta privada automaticamente, siga a [configuração do Google Drive](integrations/google-drive/README.md). O carrossel embaralha a pasta e tenta trocar a imagem a cada cinco segundos, com uma transição suave. O botão **Ajustar / Preencher** alterna entre a foto inteira e o preenchimento do quadro. A agenda mostra o mês e a legenda das datas ao lado.
@@ -25,14 +25,16 @@ No iPad, abra **Música → YouTube**, busque pelo nome e toque no resultado. A 
 
 A chave da **YouTube Data API v3** em **YouTube → Chave** serve para buscar pelo nome e listar até 50 faixas de uma playlist. Para abrir uma faixa por **Link**, a chave é opcional. Use `com.feijaum.ipadminidnsblock.central` se a restrição da chave estiver configurada para apps iOS.
 
+A reprodução usa uma sessão de visitante temporária, mostra o progresso quando o tamanho é conhecido e valida o M4A antes de abrir no player nativo. Se o link, download ou player falhar, a Central tenta outro perfil dentro do limite de 75 segundos por faixa. A abordagem foi inspirada no [resolvedor iOS do Musike](https://github.com/Ernani1234/musike/blob/41706772a4c1e774e3bf1731ca28711fa1529cf4/mobile/ios/App/App/MusikeYouTube.swift).
+
 Esta integração é experimental. Ela depende de o YouTube fornecer um endereço direto de áudio para a faixa e ainda precisa ser testada em um iPad mini com iOS 9. Se houver erro, o cartão indica a etapa (link, armazenamento, download ou player) e mostra o código de rede ou HTTP quando disponível. HTTP 403 indica que o YouTube recusou a entrega do áudio.
 
 ## Como funciona
 
 - **Serviço DNS** — o `launchd` mantém o serviço rodando no iOS com jailbreak. Ele atende consultas DNS por UDP e TCP na porta 53 do IPv4 da interface Wi-Fi e restringe os clientes à mesma sub-rede.
 - **Painel nativo** — app em Objective-C e UIKit com relógio, agenda e fotos, além do estado do filtro, IP e contadores. O botão de bloqueio altera o filtro sem desligar o DNS.
-- **Filtro local** — compara o domínio e seus sufixos com a lista. Um domínio bloqueado recebe `NXDOMAIN`. As demais consultas seguem para o resolvedor configurado. A lista inicial é pequena e editável.
-- **Privacidade** — o serviço guarda apenas os totais em memória e a preferência do filtro em disco. Consultas encaminhadas são visíveis ao resolvedor DNS configurado e viajam em DNS convencional. O painel usa uma porta de controle acessível apenas no próprio iPad.
+- **Filtro local** — compara o domínio e seus sufixos com a lista. Um domínio bloqueado recebe `NXDOMAIN`. As demais consultas seguem para o resolvedor configurado. O serviço combina a lista local editável com a lista automática.
+- **Privacidade** — o serviço guarda os totais em memória, a preferência do filtro e uma cópia da lista automática em disco. Consultas encaminhadas são visíveis ao resolvedor DNS configurado e viajam em DNS convencional. O painel usa uma porta de controle acessível apenas no próprio iPad.
 
 ### Compatibilidade DNS
 
@@ -64,7 +66,7 @@ Para gerar os pacotes, use um Mac com Xcode/SDK legado que compile para ARMv7 e 
 DEVELOPER_DIR=/Applications/Xcode-7.3.1.app/Contents/Developer make ios
 ```
 
-O script gera `dist/dnsblock-central-0.4.12.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
+O script gera `dist/dnsblock-central-0.4.14.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
 
 ## Configuração da rede
 
@@ -106,6 +108,12 @@ Para navegar usando esse DNS no Windows, pressione **Win + R**, digite `ncpa.cpl
 2. Na seção **LAN/DHCP**, guarde os valores anteriores e configure o DNS entregue aos clientes com o IP reservado do iPad. A opção de DNS de **WAN/Internet** pode ser separada. Se o roteador não oferecer DNS para clientes da LAN, mantenha a configuração manual por aparelho.
 3. Reconecte um cliente ao Wi-Fi para renovar a configuração e verifique no painel se há novas consultas. Um resolvedor público como DNS alternativo ou um DNS IPv6 anunciado pelo roteador pode fazer parte das consultas escapar do filtro.
 4. Se o iPad ficar offline e for o único DNS anunciado, a resolução de nomes pode parar. Para desfazer, restaure o DNS anterior no roteador e reconecte os clientes.
+
+## Lista automática de anúncios
+
+O serviço baixa a lista [HaGeZi Multi LIGHT](https://github.com/hagezi/dns-blocklists#light) por HTTPS. A primeira tentativa acontece ao iniciar o serviço, salvo se já houver uma cópia válida com menos de 24 horas. Depois, o serviço verifica a lista a cada 24 horas enquanto estiver rodando. Em caso de falha, mantém a última lista válida e tenta novamente em uma hora.
+
+A lista automática é substituída em memória após a validação, sem reiniciar o DNS. Entradas removidas pelo mantenedor deixam de ser bloqueadas pela lista automática. A lista local continua valendo. Veja o total de domínios automáticos em **Ajustes** da Central da Casa. A atualização ocorre no serviço em segundo plano, mesmo com o painel fechado.
 
 ## Ajustes avançados do filtro
 

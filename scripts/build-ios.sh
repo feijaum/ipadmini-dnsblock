@@ -28,7 +28,10 @@ if [[ -n "${IOS_LINKER:-}" ]]; then
     flags+=(--target="armv7-apple-ios$min_version" "-fuse-ld=$IOS_LINKER"
         -Werror=unguarded-availability -mlinker-version=609 -Wl,-segalign,4000 -Wl,-no_data_const)
 fi
-"$clang" "${flags[@]}" -std=c99 -pthread src/dnsblock.c -o "$package/usr/libexec/ipadmini-dnsblock"
+"$clang" "${flags[@]}" -std=c99 -pthread -DDNSBLOCK_IOS -c src/dnsblock.c -o "$build/dnsblock.o"
+"$clang" "${flags[@]}" -fobjc-arc -fblocks -c src/blocklist-download.m -o "$build/blocklist-download.o"
+"$clang" "${flags[@]}" "$build/dnsblock.o" "$build/blocklist-download.o" \
+    -framework Foundation -framework CFNetwork -framework Security -lobjc -o "$package/usr/libexec/ipadmini-dnsblock"
 # The iOS 8 runtime provides the ARC and Foundation features used here.
 # Pass ARC to compilation only, so Clang does not force-load libarclite.
 objects=()

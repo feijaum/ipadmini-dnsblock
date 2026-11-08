@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -37,12 +38,18 @@ struct question {
     bool filterable;
 };
 
+struct blocklist {
+    char **domains;
+    size_t count;
+};
+
+enum { MAX_DOMAINS = 200000, MAX_BLOCKLIST_BYTES = 8 * 1024 * 1024 };
+
 static struct {
     struct sockaddr_in upstream;
     struct in_addr lan;
     struct in_addr mask;
-    char **domains;
-    size_t domain_count;
+    struct blocklist local, automatic;
     const char *state_path;
     bool enabled;
     bool compatibility;
@@ -100,20 +107,48 @@ static int compare_names(const void *a, const void *b)
     return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-static void load_blocklist(const char *path)
+static void free_blocklist(struct blocklist *list)
+{
+    for (size_t i = 0; i < list->count; i++)
+        free(list->domains[i]);
+    free(list->domains);
+    *list = (struct blocklist){0};
+}
+
+static bool load_blocklist(const char *path, struct blocklist *list, bool downloaded)
 {
     FILE *file = fopen(path, "r");
     if (!file)
-        fatal(path);
+        return false;
+    struct stat info;
     char line[512];
-    size_t capacity = 0;
+    size_t capacity = 0, expected = 0;
+    bool loaded = false;
+    if (downloaded && (fstat(fileno(file), &info) || !S_ISREG(info.st_mode) ||
+                       info.st_size > MAX_BLOCKLIST_BYTES))
+        goto done;
+
     while (fgets(line, sizeof(line), file)) {
-        size_t len = strcspn(line, "#\r\n");
-        if (!strchr(line, '\n') && !feof(file)) {
+        const char *newline = strchr(line, '\n');
+        if (!newline && (downloaded || !feof(file))) {
+            if (downloaded)
+                goto done;
             int ch;
             while ((ch = fgetc(file)) != '\n' && ch != EOF) {}
             continue;
         }
+        /* The publisher includes its entry count so partial downloads can be rejected. */
+        const char prefix[] = "# Number of entries: ";
+        if (downloaded && !strncmp(line, prefix, sizeof(prefix) - 1)) {
+            char *end;
+            unsigned long count = strtoul(line + sizeof(prefix) - 1, &end, 10);
+            if (expected || count < 1000 || count > MAX_DOMAINS ||
+                (end != newline && !(end + 1 == newline && *end == '\r')))
+                goto done;
+            expected = (size_t)count;
+        }
+
+        size_t len = strcspn(line, "#\r\n");
         while (len && isspace((unsigned char)line[len - 1]))
             len--;
         size_t start = strspn(line, " \t");
@@ -139,36 +174,39 @@ static void load_blocklist(const char *path)
             line[i] = (char)tolower(ch);
             label++;
         }
-        if (!valid || label == 0 || label > 63)
+        if (!valid || label == 0 || label > 63 || (downloaded && !strchr(line + start, '.'))) {
+            if (downloaded)
+                goto done;
             continue;
-        if (server.domain_count == 200000) {
-            fprintf(stderr, "Lista excede o limite de 200000 entradas.\n");
-            exit(EXIT_FAILURE);
         }
-        if (server.domain_count == capacity) {
+        if (list->count == MAX_DOMAINS)
+            goto done;
+        if (list->count == capacity) {
             capacity = capacity ? capacity * 2 : 128;
-            char **domains = realloc(server.domains, capacity * sizeof(*domains));
+            char **domains = realloc(list->domains, capacity * sizeof(*domains));
             if (!domains)
-                fatal("realloc");
-            server.domains = domains;
+                goto done;
+            list->domains = domains;
         }
-        server.domains[server.domain_count] = strdup(line + start);
-        if (!server.domains[server.domain_count])
-            fatal("strdup");
-        server.domain_count++;
+        list->domains[list->count] = strdup(line + start);
+        if (!list->domains[list->count])
+            goto done;
+        list->count++;
     }
-    if (ferror(file))
-        fatal(path);
+    loaded = !ferror(file) && (!downloaded || (expected && list->count == expected));
+done:
     fclose(file);
-    if (server.domain_count)
-        qsort(server.domains, server.domain_count, sizeof(*server.domains), compare_names);
+    if (!loaded)
+        free_blocklist(list);
+    else if (list->count)
+        qsort(list->domains, list->count, sizeof(*list->domains), compare_names);
+    return loaded;
 }
 
-static bool matches_blocklist(const char *name)
+static bool matches_blocklist(const struct blocklist *list, const char *name)
 {
-    while (server.domain_count) {
-        if (bsearch(&name, server.domains, server.domain_count, sizeof(*server.domains),
-                    compare_names))
+    while (list->count) {
+        if (bsearch(&name, list->domains, list->count, sizeof(*list->domains), compare_names))
             return true;
         const char *dot = strchr(name, '.');
         if (!dot)
@@ -177,6 +215,54 @@ static bool matches_blocklist(const char *name)
     }
     return false;
 }
+
+#ifdef DNSBLOCK_IOS
+bool download_blocklist(const char *path, size_t max_bytes);
+
+static bool update_blocklist(const char *path)
+{
+    char pending[strlen(path) + sizeof(".new")];
+    snprintf(pending, sizeof(pending), "%s.new", path);
+    unlink(pending);
+    int fd = open(pending, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0)
+        return false;
+    close(fd);
+
+    struct blocklist next = {0};
+    if (!download_blocklist(pending, MAX_BLOCKLIST_BYTES) ||
+        !load_blocklist(pending, &next, true) || rename(pending, path)) {
+        free_blocklist(&next);
+        unlink(pending);
+        return false;
+    }
+
+    pthread_mutex_lock(&server.lock);
+    struct blocklist previous = server.automatic;
+    server.automatic = next;
+    pthread_mutex_unlock(&server.lock);
+    free_blocklist(&previous);
+    return true;
+}
+
+static void *refresh_blocklist(void *argument)
+{
+    const char *path = argument;
+    enum { REFRESH_SECONDS = 24 * 60 * 60, RETRY_SECONDS = 60 * 60 };
+    struct stat info;
+    double age = server.automatic.count && !stat(path, &info)
+        ? difftime(time(NULL), info.st_mtime) : REFRESH_SECONDS;
+    if (age >= 0 && age < REFRESH_SECONDS)
+        sleep(REFRESH_SECONDS - (unsigned)age);
+    while (true) {
+        bool updated = update_blocklist(path);
+        if (!updated)
+            fprintf(stderr, "Falha ao atualizar a lista automática de DNS.\n");
+        sleep(updated ? REFRESH_SECONDS : RETRY_SECONDS);
+    }
+    return NULL;
+}
+#endif
 
 static int64_t now_ms(void)
 {
@@ -311,10 +397,11 @@ static size_t resolve(uint8_t *query, size_t size, uint8_t *answer, bool tcp)
     if ((query[2] & 0x78) || question.klass != 1)
         return error_response(query, &question, answer, REFUSED);
 
-    bool listed = question.filterable && matches_blocklist(question.name);
     pthread_mutex_lock(&server.lock);
     server.queries++;
-    bool block = server.enabled && listed;
+    bool block = server.enabled && question.filterable &&
+        (matches_blocklist(&server.local, question.name) ||
+         matches_blocklist(&server.automatic, question.name));
     bool compatibility = server.compatibility;
     if (block)
         server.blocked++;
@@ -434,7 +521,7 @@ static void *control_loop(void *argument)
         bool compatible = len == 7 && !memcmp(command, "compat\n", len);
         bool standard = len == 9 && !memcmp(command, "standard\n", len);
         bool changing = enable || disable || compatible || standard;
-        char response[224] = "{\"error\":\"comando inválido\"}\n";
+        char response[256] = "{\"error\":\"comando inválido\"}\n";
         if (changing || (len == 7 && !memcmp(command, "status\n", len))) {
             char ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &server.lan, ip, sizeof(ip));
@@ -449,9 +536,9 @@ static void *control_loop(void *argument)
             }
             if (saved)
                 snprintf(response, sizeof(response),
-                         "{\"enabled\":%s,\"compatibility\":%s,\"queries\":%llu,\"blocked\":%llu,\"ip\":\"%s\"}\n",
+                         "{\"enabled\":%s,\"compatibility\":%s,\"queries\":%llu,\"blocked\":%llu,\"automatic_domains\":%zu,\"ip\":\"%s\"}\n",
                          server.enabled ? "true" : "false", server.compatibility ? "true" : "false",
-                         server.queries, server.blocked, ip);
+                         server.queries, server.blocked, server.automatic.count, ip);
             else
                 snprintf(response, sizeof(response), "{\"error\":\"falha ao salvar a preferência\"}\n");
             pthread_mutex_unlock(&server.lock);
@@ -579,8 +666,14 @@ int main(int argc, char **argv)
     int tcp = listen_on(server.lan, dns_port, SOCK_STREAM);
     int control = listen_on(loopback, port(argv[3]), SOCK_STREAM);
     drop_privileges(strcmp(argv[8], "-") == 0 ? NULL : argv[8]);
-    load_blocklist(argv[6]);
+    if (!load_blocklist(argv[6], &server.local, false)) {
+        fprintf(stderr, "Falha ao carregar a lista local: %s\n", argv[6]);
+        return EXIT_FAILURE;
+    }
     server.state_path = argv[7];
+    char automatic_path[strlen(server.state_path) + sizeof(".blocklist")];
+    snprintf(automatic_path, sizeof(automatic_path), "%s.blocklist", server.state_path);
+    (void)load_blocklist(automatic_path, &server.automatic, true);
     FILE *state = fopen(server.state_path, "r");
     if (state) {
         server.enabled = fgetc(state) != '0';
@@ -599,6 +692,11 @@ int main(int argc, char **argv)
         pthread_join(workers[0], NULL);
         return EXIT_FAILURE;
     }
+#ifdef DNSBLOCK_IOS
+    pthread_t updater;
+    if (pthread_create(&updater, NULL, refresh_blocklist, automatic_path))
+        fprintf(stderr, "Falha ao iniciar a atualização automática de DNS.\n");
+#endif
     while (true) {
         sleep(5);
         struct in_addr ip, mask;

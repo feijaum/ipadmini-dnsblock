@@ -2,6 +2,8 @@
 #import "YouTube.h"
 #import <AVFoundation/AVFoundation.h>
 #import <Security/Security.h>
+#include <stdio.h>
+#include <string.h>
 
 static NSString *const MusicHost = @"api.audius.co";
 static const NSUInteger MaxTrackBytes = 32 * 1024 * 1024;
@@ -122,6 +124,9 @@ static NSURL *YouTubeTrackDirectory(void)
 @property(nonatomic, strong) NSHTTPURLResponse *response;
 @property(nonatomic, strong) NSError *writeError;
 @property(nonatomic) NSUInteger bytesWritten;
+@property(nonatomic) int64_t expectedBytes;
+@property(nonatomic) NSUInteger progressStep;
+@property(nonatomic, copy) void (^progress)(NSUInteger percent);
 @property(nonatomic, copy) void (^finished)(NSURL *, NSHTTPURLResponse *, NSError *);
 @end
 
@@ -132,12 +137,46 @@ static NSURL *YouTubeTrackDirectory(void)
 {
     self.response = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
     NSString *mime = response.MIMEType.lowercaseString;
-    BOOL audio = [mime hasPrefix:@"audio/"] || [mime isEqualToString:@"application/octet-stream"];
-    BOOL accept = self.response.statusCode == 200 && audio &&
-        AllowedMusicURL(response.URL) && CentralYouTubeMediaHost(response.URL.host);
-    if (accept && response.expectedContentLength > (int64_t)MaxTrackBytes) {
-        self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil];
-        accept = NO;
+    BOOL audio = [mime isEqualToString:@"audio/mp4"] || [mime isEqualToString:@"application/octet-stream"];
+    BOOL allowed = AllowedMusicURL(response.URL) && CentralYouTubeMediaHost(response.URL.host);
+    NSInteger status = self.response.statusCode;
+    BOOL accept = allowed && audio && (status == 200 || status == 206);
+    if (accept) {
+        int64_t length = response.expectedContentLength;
+        if (status == 206) {
+            long long end = 0, total = 0;
+            char extra;
+            NSString *range = self.response.allHeaderFields[@"Content-Range"];
+            if (!range) {
+                for (NSString *key in self.response.allHeaderFields) {
+                    if ([key caseInsensitiveCompare:@"Content-Range"] == NSOrderedSame) {
+                        range = self.response.allHeaderFields[key];
+                        break;
+                    }
+                }
+            }
+            // This request asks for the complete file, even if the server uses HTTP 206.
+            const char *value = range.UTF8String;
+            if (!value || sscanf(value, "bytes 0-%lld/%lld%c", &end, &total, &extra) != 2 ||
+                total <= 0 || end != total - 1 || (length > 0 && length != total)) {
+                self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:nil];
+                accept = NO;
+            } else {
+                length = total;
+            }
+        }
+        if (accept && (length > (int64_t)MaxTrackBytes || self.expectedBytes > (int64_t)MaxTrackBytes)) {
+            self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil];
+            accept = NO;
+        }
+        if (accept && length > 0) {
+            if (self.expectedBytes > 0 && self.expectedBytes != length) {
+                self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:nil];
+                accept = NO;
+            } else {
+                self.expectedBytes = length;
+            }
+        }
     }
     if (accept) {
         self.stream = [NSOutputStream outputStreamWithURL:self.destination append:NO];
@@ -171,6 +210,13 @@ static NSURL *YouTubeTrackDirectory(void)
         bytes += written;
         self.bytesWritten += (NSUInteger)written;
     }
+    if (self.expectedBytes > 0) {
+        NSUInteger step = (NSUInteger)MIN(20, (20LL * self.bytesWritten) / self.expectedBytes);
+        if (step > self.progressStep) {
+            self.progressStep = step;
+            self.progress(step * 5);
+        }
+    }
 }
 
 - (void)URLSession:(NSURLSession *)session task:(__unused NSURLSessionTask *)task didCompleteWithError:(NSError *)error
@@ -182,10 +228,23 @@ static NSURL *YouTubeTrackDirectory(void)
         // An HTTP error or invalid response was rejected before creating a file.
         error = nil;
     }
-    NSURL *file = !error && self.bytesWritten ? self.destination : nil;
+    NSURL *file = nil;
+    if (!error && self.bytesWritten) {
+        unsigned char header[12];
+        FILE *input = fopen(self.destination.path.fileSystemRepresentation, "rb");
+        BOOL mp4 = input && fread(header, 1, sizeof(header), input) == sizeof(header) &&
+            memcmp(header + 4, "ftyp", 4) == 0;
+        if (input) fclose(input);
+        if (mp4 && (self.expectedBytes <= 0 || self.bytesWritten == (NSUInteger)self.expectedBytes)) {
+            file = self.destination;
+        } else {
+            error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:nil];
+        }
+    }
     if (!file) [[NSFileManager defaultManager] removeItemAtURL:self.destination error:NULL];
     self.finished(file, self.response, error);
     self.finished = nil;
+    self.progress = nil;
     [session finishTasksAndInvalidate];
 }
 @end
@@ -363,13 +422,17 @@ static NSURL *YouTubeTrackDirectory(void)
 @property(nonatomic, readwrite, copy) NSString *summary;
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSURLSessionDataTask *youtubeLookup;
+@property(nonatomic, copy) NSString *youtubeVisitor;
+@property(nonatomic, strong) NSDate *youtubeVisitorExpires;
 @property(nonatomic, copy) NSArray *youtubeQueue;
 @property(nonatomic) NSUInteger youtubeIndex;
 @property(nonatomic, strong) NSURLSessionTask *download;
 @property(nonatomic, strong) AVAudioPlayer *audio;
-@property(nonatomic, strong) AVPlayer *radio;
-@property(nonatomic, strong) AVPlayerItem *radioItem;
-@property(nonatomic) BOOL radioRequested;
+@property(nonatomic, strong) AVPlayer *mediaPlayer;
+@property(nonatomic, strong) AVPlayerItem *mediaItem;
+@property(nonatomic) BOOL mediaRequested;
+@property(nonatomic, copy) void (^mediaFailure)(NSError *);
+@property(nonatomic, copy) NSString *youtubeAudioFailure;
 @property(nonatomic, strong) NSURL *audioFile;
 @property(nonatomic, copy) NSString *trackTitle;
 @property(nonatomic) NSUInteger generation;
@@ -409,20 +472,22 @@ static NSURL *YouTubeTrackDirectory(void)
     return CentralYouTubeSearch(self.session, selection);
 }
 
-- (BOOL)canToggle { return self.audio != nil || self.radio != nil; }
+- (BOOL)canToggle { return self.audio != nil || self.mediaPlayer != nil; }
 - (BOOL)canStop { return self.canToggle || self.download != nil || self.youtubeLookup != nil; }
-- (BOOL)isPlaying { return self.radio ? self.radioRequested : self.audio.isPlaying; }
+- (BOOL)isPlaying { return self.mediaPlayer ? self.mediaRequested : self.audio.isPlaying; }
 
 - (void)clearAudio
 {
-    if (self.radioItem) {
-        [self.radioItem removeObserver:self forKeyPath:@"status"];
-        [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.radioItem];
+    if (self.mediaItem) {
+        [self.mediaItem removeObserver:self forKeyPath:@"status"];
+        [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.mediaItem];
+        [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.mediaItem];
     }
-    [self.radio pause];
-    self.radio = nil;
-    self.radioItem = nil;
-    self.radioRequested = NO;
+    [self.mediaPlayer pause];
+    self.mediaPlayer = nil;
+    self.mediaItem = nil;
+    self.mediaRequested = NO;
+    self.mediaFailure = nil;
     [self.audio stop];
     self.audio = nil;
     if (self.audioFile) [[NSFileManager defaultManager] removeItemAtURL:self.audioFile error:NULL];
@@ -435,6 +500,7 @@ static NSURL *YouTubeTrackDirectory(void)
     [self.youtubeLookup cancel];
     self.youtubeLookup = nil;
     self.youtubeQueue = nil;
+    self.youtubeAudioFailure = nil;
     self.youtubeIndex = 0;
     [self.download cancel];
     self.download = nil;
@@ -456,7 +522,7 @@ static NSURL *YouTubeTrackDirectory(void)
     self.trackTitle = [NSString stringWithFormat:@"%@ · %@", track[@"title"], track[@"artist"]];
     self.summary = [NSString stringWithFormat:@"Carregando %@…", track[@"title"]];
     if (track[@"radio"]) {
-        [self playRadio:[NSURL URLWithString:track[@"radio"]] generation:generation];
+        [self playMediaURL:[NSURL URLWithString:track[@"radio"]] generation:generation failure:nil];
         return;
     }
     NSURL *url = MusicURL([NSString stringWithFormat:@"/v1/tracks/%@/stream", track[@"id"]], nil);
@@ -475,6 +541,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
         else if (code == NSURLErrorCannotCreateFile || code == NSURLErrorCannotWriteToFile)
             reason = @"não gravou o arquivo no iPad";
         else if (code == NSURLErrorDataLengthExceedsMaximum) reason = @"áudio acima do limite de 32 MB";
+        else if (code == NSURLErrorCannotDecodeContentData) reason = @"áudio incompleto ou fora do formato M4A";
         else if (code == NSURLErrorCancelled) reason = @"conexão cancelada (-999)";
         else if (code == NSURLErrorTimedOut) reason = @"tempo esgotado (-1001)";
         else reason = [NSString stringWithFormat:@"rede %ld", (long)code];
@@ -482,7 +549,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
         reason = [NSString stringWithFormat:@"erro %ld", (long)error.code];
     } else if (status == 403 && [stage isEqualToString:@"download"]) {
         reason = @"YouTube recusou o áudio (403)";
-    } else if (status && status != 200) {
+    } else if (status && status != 200 && status != 206) {
         reason = [NSString stringWithFormat:@"HTTP %ld", (long)status];
     } else {
         reason = [stage isEqualToString:@"link"] ? @"AAC indisponível" : @"arquivo de áudio inválido";
@@ -552,12 +619,47 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
 {
     self.trackTitle = [NSString stringWithFormat:@"%@ · YouTube", track[@"title"]];
     self.summary = [NSString stringWithFormat:@"Buscando áudio de %@…", track[@"title"]];
-    [self lookupYouTubeAudio:track[@"id"] fallback:NO];
+    self.youtubeAudioFailure = nil;
+    NSString *video = track[@"id"];
+    NSUInteger generation = ++self.generation;
+    __weak HouseMusic *music = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 75 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        HouseMusic *target = music;
+        if (!target || target.generation != generation) return;
+        BOOL opening = target.mediaItem && target.mediaItem.status == AVPlayerItemStatusUnknown;
+        if (!target.youtubeLookup && !target.download && !opening) return;
+        NSString *failure = target.youtubeAudioFailure ?: @"YouTube · tempo esgotado";
+        [target resetPlayback];
+        target.summary = failure;
+        if (target.didUpdate) target.didUpdate();
+    });
+    if ([self.youtubeVisitorExpires timeIntervalSinceNow] > 0) {
+        [self lookupYouTubeAudio:video attempt:0];
+        return;
+    }
+
+    self.youtubeVisitor = nil;
+    self.youtubeLookup = [self.session dataTaskWithRequest:CentralYouTubeVisitorRequest()
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+        NSString *visitor = !error && http.statusCode == 200 ? CentralYouTubeVisitorData(data) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.generation != generation) return;
+            self.youtubeLookup = nil;
+            if (visitor.length) {
+                self.youtubeVisitor = visitor;
+                self.youtubeVisitorExpires = [NSDate dateWithTimeIntervalSinceNow:24 * 60 * 60];
+            }
+            [self lookupYouTubeAudio:video attempt:0];
+        });
+    }];
+    [self.youtubeLookup resume];
+    if (self.didUpdate) self.didUpdate();
 }
 
-- (void)lookupYouTubeAudio:(NSString *)video fallback:(BOOL)fallback
+- (void)lookupYouTubeAudio:(NSString *)video attempt:(NSUInteger)attempt
 {
-    NSURLRequest *request = CentralYouTubePlayerRequest(video, fallback);
+    NSURLRequest *request = CentralYouTubePlayerRequest(video, self.youtubeVisitor, attempt);
     if (!request) {
         self.summary = @"Link do YouTube inválido";
         if (self.didUpdate) self.didUpdate();
@@ -567,23 +669,26 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
     self.youtubeLookup = [self.session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         NSInteger status = http.statusCode;
-        NSURL *audio = !error && status == 200 ? CentralYouTubeAudioURL(data) : nil;
+        int64_t length = 0;
+        NSURL *audio = !error && status == 200 ? CentralYouTubeAudioURL(data, &length) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.generation != generation) return;
             self.youtubeLookup = nil;
             if (!audio) {
-                if (!fallback && (error || status == 404 || status >= 500)) {
-                    [self lookupYouTubeAudio:video fallback:YES];
+                if (CentralYouTubePlayerRequest(video, self.youtubeVisitor, attempt + 1)) {
+                    [self lookupYouTubeAudio:video attempt:attempt + 1];
                     return;
                 }
-                self.summary = YouTubeFailure(@"link", http, error);
+                self.summary = self.youtubeAudioFailure ?: YouTubeFailure(@"link", http, error);
                 if (self.didUpdate) self.didUpdate();
                 return;
             }
             self.summary = @"Baixando áudio do YouTube…";
-            NSURLRequest *download = [NSURLRequest requestWithURL:audio
-                cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:25];
-            [self downloadYouTubeAudio:download];
+            NSMutableURLRequest *download = [NSMutableURLRequest requestWithURL:audio
+                cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];
+            [download setValue:@"bytes=0-" forHTTPHeaderField:@"Range"];
+            [download setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
+            [self downloadYouTubeAudio:download expectedBytes:length video:video attempt:attempt];
         });
     }];
     [self.youtubeLookup resume];
@@ -602,7 +707,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
     else [self clearAudio];
 }
 
-- (void)downloadYouTubeAudio:(NSURLRequest *)request
+- (void)downloadYouTubeAudio:(NSURLRequest *)request expectedBytes:(int64_t)length video:(NSString *)video attempt:(NSUInteger)attempt
 {
     NSURL *directory = YouTubeTrackDirectory();
     if (!directory || ![[NSFileManager defaultManager] createDirectoryAtURL:directory
@@ -616,10 +721,18 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
     NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     configuration.HTTPShouldSetCookies = NO;
     configuration.URLCache = nil;
-    configuration.timeoutIntervalForResource = 120;
+    configuration.timeoutIntervalForResource = 35;
     YouTubeAudioTransport *transport = [[YouTubeAudioTransport alloc] init];
     NSString *filename = [[[NSUUID UUID] UUIDString] stringByAppendingPathExtension:@"m4a"];
     transport.destination = [directory URLByAppendingPathComponent:filename];
+    transport.expectedBytes = length;
+    transport.progress = ^(NSUInteger percent) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.generation != generation || !self.download) return;
+            self.summary = [NSString stringWithFormat:@"Baixando áudio do YouTube… %lu%%", (unsigned long)percent];
+            if (self.didUpdate) self.didUpdate();
+        });
+    };
     transport.finished = ^(NSURL *file, NSHTTPURLResponse *response, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.generation != generation) {
@@ -627,18 +740,44 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
                 return;
             }
             self.download = nil;
-            self.audioFile = file;
-            AVAudioPlayer *player = file ? [[AVAudioPlayer alloc] initWithContentsOfURL:file error:NULL] : nil;
-            [self startAudioPlayer:player];
-            if (!self.audio) {
-                self.summary = file ? @"YouTube · player\nNão abriu o AAC" : YouTubeFailure(@"download", response, error);
+            if (!file) {
+                NSString *failure = YouTubeFailure(@"download", response, error);
+                BOOL storageError = [error.domain isEqualToString:NSURLErrorDomain] &&
+                    (error.code == NSURLErrorCannotCreateFile || error.code == NSURLErrorCannotWriteToFile);
+                if (!storageError) {
+                    [self retryYouTube:video afterAttempt:attempt failure:failure];
+                } else {
+                    self.summary = failure;
+                    if (self.didUpdate) self.didUpdate();
+                }
+                return;
             }
-            if (self.didUpdate) self.didUpdate();
+            self.audioFile = file;
+            self.summary = @"Abrindo áudio do YouTube…";
+            __weak HouseMusic *music = self;
+            [self playMediaURL:file generation:generation failure:^(NSError *playerError) {
+                NSString *reason = playerError ? [NSString stringWithFormat:@"Não abriu o M4A (%ld)", (long)playerError.code] :
+                    @"Tempo esgotado ao abrir o M4A";
+                [music retryYouTube:video afterAttempt:attempt
+                    failure:[NSString stringWithFormat:@"YouTube · player\n%@", reason]];
+            }];
         });
     };
     NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration delegate:transport delegateQueue:nil];
     self.download = [session dataTaskWithRequest:request];
     [self.download resume];
+    if (self.didUpdate) self.didUpdate();
+}
+
+- (void)retryYouTube:(NSString *)video afterAttempt:(NSUInteger)attempt failure:(NSString *)failure
+{
+    if (![self.youtubeAudioFailure hasPrefix:@"YouTube · player"]) self.youtubeAudioFailure = failure;
+    if (CentralYouTubePlayerRequest(video, self.youtubeVisitor, attempt + 1)) {
+        self.summary = @"Tentando outra rota de áudio do YouTube…";
+        [self lookupYouTubeAudio:video attempt:attempt + 1];
+        return;
+    }
+    self.summary = self.youtubeAudioFailure;
     if (self.didUpdate) self.didUpdate();
 }
 
@@ -675,22 +814,28 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
     if (self.didUpdate) self.didUpdate();
 }
 
-- (void)playRadio:(NSURL *)url generation:(NSUInteger)generation
+- (void)playMediaURL:(NSURL *)url generation:(NSUInteger)generation failure:(void (^)(NSError *))failure
 {
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
     [[AVAudioSession sharedInstance] setActive:YES error:NULL];
-    self.radioItem = [AVPlayerItem playerItemWithURL:url];
-    self.radio = [AVPlayer playerWithPlayerItem:self.radioItem];
-    self.radioRequested = YES;
-    [self.radioItem addObserver:self forKeyPath:@"status"
+    self.mediaItem = [AVPlayerItem playerItemWithURL:url];
+    self.mediaPlayer = [AVPlayer playerWithPlayerItem:self.mediaItem];
+    self.mediaRequested = YES;
+    self.mediaFailure = failure;
+    AVPlayerItem *item = self.mediaItem;
+    [item addObserver:self forKeyPath:@"status"
         options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial context:NULL];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(radioFailed:)
-        name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.radioItem];
-    [self.radio play];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(mediaFailed:)
+        name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.mediaItem];
+    if (self.audioFile) {
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(localMediaFinished:)
+            name:AVPlayerItemDidPlayToEndTimeNotification object:item];
+    }
+    [self.mediaPlayer play];
     if (self.didUpdate) self.didUpdate();
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        if (self.generation == generation && self.radioRequested &&
-            self.radioItem.status == AVPlayerItemStatusUnknown) [self radioFailed:nil];
+        if (self.generation == generation && self.mediaItem == item && self.mediaRequested &&
+            item.status == AVPlayerItemStatusUnknown) [self handleMediaFailure:nil];
     });
 }
 
@@ -702,29 +847,49 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
         return;
     }
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (object != self.radioItem) return;
-        if (self.radioItem.status == AVPlayerItemStatusFailed) [self radioFailed:nil];
-        else if (self.radioItem.status == AVPlayerItemStatusReadyToPlay) {
+        if (object != self.mediaItem) return;
+        if (self.mediaItem.status == AVPlayerItemStatusFailed) [self handleMediaFailure:self.mediaItem.error];
+        else if (self.mediaItem.status == AVPlayerItemStatusReadyToPlay) {
             self.summary = self.trackTitle;
             if (self.didUpdate) self.didUpdate();
         }
     });
 }
 
-- (void)radioFailed:(NSNotification *)notification
+- (void)mediaFailed:(NSNotification *)notification
 {
-    if (!self.radioItem || (notification && notification.object != self.radioItem)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (notification.object != self.mediaItem) return;
+        NSError *error = notification.userInfo[AVPlayerItemFailedToPlayToEndTimeErrorKey] ?: self.mediaItem.error;
+        [self handleMediaFailure:error];
+    });
+}
+
+- (void)handleMediaFailure:(NSError *)error
+{
+    void (^failure)(NSError *) = self.mediaFailure;
     [self clearAudio];
-    self.summary = @"Rádio indisponível · tente outra estação";
-    if (self.didUpdate) self.didUpdate();
+    if (failure) {
+        failure(error);
+    } else {
+        self.summary = @"Rádio indisponível · tente outra estação";
+        if (self.didUpdate) self.didUpdate();
+    }
+}
+
+- (void)localMediaFinished:(NSNotification *)notification
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (notification.object == self.mediaItem && self.audioFile) [self finishLocalAudio:YES];
+    });
 }
 
 - (void)togglePlayback
 {
-    if (self.radio) {
-        self.radioRequested = !self.radioRequested;
-        if (self.radioRequested) [self.radio play];
-        else [self.radio pause];
+    if (self.mediaPlayer) {
+        self.mediaRequested = !self.mediaRequested;
+        if (self.mediaRequested) [self.mediaPlayer play];
+        else [self.mediaPlayer pause];
     } else if (self.audio.isPlaying) [self.audio pause];
     else if (self.audio) [self.audio play];
     if (self.didUpdate) self.didUpdate();
@@ -732,7 +897,11 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
 
 - (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)success
 {
-    if (player != self.audio) return;
+    if (player == self.audio) [self finishLocalAudio:success];
+}
+
+- (void)finishLocalAudio:(BOOL)success
+{
     [self clearAudio];
     if (success && self.youtubeQueue && self.youtubeIndex + 1 < self.youtubeQueue.count) {
         self.youtubeIndex++;
