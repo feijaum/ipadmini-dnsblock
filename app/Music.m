@@ -363,6 +363,8 @@ static NSURL *YouTubeTrackDirectory(void)
 @property(nonatomic, readwrite, copy) NSString *summary;
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSURLSessionDataTask *youtubeLookup;
+@property(nonatomic, copy) NSString *youtubeVisitor;
+@property(nonatomic, strong) NSDate *youtubeVisitorExpires;
 @property(nonatomic, copy) NSArray *youtubeQueue;
 @property(nonatomic) NSUInteger youtubeIndex;
 @property(nonatomic, strong) NSURLSessionTask *download;
@@ -552,12 +554,35 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
 {
     self.trackTitle = [NSString stringWithFormat:@"%@ · YouTube", track[@"title"]];
     self.summary = [NSString stringWithFormat:@"Buscando áudio de %@…", track[@"title"]];
-    [self lookupYouTubeAudio:track[@"id"] fallback:NO];
+    NSString *video = track[@"id"];
+    if ([self.youtubeVisitorExpires timeIntervalSinceNow] > 0) {
+        [self lookupYouTubeAudio:video attempt:0];
+        return;
+    }
+
+    self.youtubeVisitor = nil;
+    NSUInteger generation = self.generation;
+    self.youtubeLookup = [self.session dataTaskWithRequest:CentralYouTubeVisitorRequest()
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+        NSString *visitor = !error && http.statusCode == 200 ? CentralYouTubeVisitorData(data) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.generation != generation) return;
+            self.youtubeLookup = nil;
+            if (visitor.length) {
+                self.youtubeVisitor = visitor;
+                self.youtubeVisitorExpires = [NSDate dateWithTimeIntervalSinceNow:24 * 60 * 60];
+            }
+            [self lookupYouTubeAudio:video attempt:0];
+        });
+    }];
+    [self.youtubeLookup resume];
+    if (self.didUpdate) self.didUpdate();
 }
 
-- (void)lookupYouTubeAudio:(NSString *)video fallback:(BOOL)fallback
+- (void)lookupYouTubeAudio:(NSString *)video attempt:(NSUInteger)attempt
 {
-    NSURLRequest *request = CentralYouTubePlayerRequest(video, fallback);
+    NSURLRequest *request = CentralYouTubePlayerRequest(video, self.youtubeVisitor, attempt);
     if (!request) {
         self.summary = @"Link do YouTube inválido";
         if (self.didUpdate) self.didUpdate();
@@ -572,8 +597,8 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
             if (self.generation != generation) return;
             self.youtubeLookup = nil;
             if (!audio) {
-                if (!fallback && (error || status == 404 || status >= 500)) {
-                    [self lookupYouTubeAudio:video fallback:YES];
+                if (CentralYouTubePlayerRequest(video, self.youtubeVisitor, attempt + 1)) {
+                    [self lookupYouTubeAudio:video attempt:attempt + 1];
                     return;
                 }
                 self.summary = YouTubeFailure(@"link", http, error);
@@ -583,7 +608,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
             self.summary = @"Baixando áudio do YouTube…";
             NSURLRequest *download = [NSURLRequest requestWithURL:audio
                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:25];
-            [self downloadYouTubeAudio:download];
+            [self downloadYouTubeAudio:download video:video attempt:attempt];
         });
     }];
     [self.youtubeLookup resume];
@@ -602,7 +627,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
     else [self clearAudio];
 }
 
-- (void)downloadYouTubeAudio:(NSURLRequest *)request
+- (void)downloadYouTubeAudio:(NSURLRequest *)request video:(NSString *)video attempt:(NSUInteger)attempt
 {
     NSURL *directory = YouTubeTrackDirectory();
     if (!directory || ![[NSFileManager defaultManager] createDirectoryAtURL:directory
@@ -627,6 +652,12 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
                 return;
             }
             self.download = nil;
+            if (!file && (response.statusCode == 403 || response.statusCode == 410) &&
+                CentralYouTubePlayerRequest(video, self.youtubeVisitor, attempt + 1)) {
+                self.summary = @"Tentando outra rota de áudio do YouTube…";
+                [self lookupYouTubeAudio:video attempt:attempt + 1];
+                return;
+            }
             self.audioFile = file;
             AVAudioPlayer *player = file ? [[AVAudioPlayer alloc] initWithContentsOfURL:file error:NULL] : nil;
             [self startAudioPlayer:player];
