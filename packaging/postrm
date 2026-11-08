@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 if [ "${1:-}" = purge ]; then
-    rm -f /var/mobile/Library/Preferences/com.feijaum.ipadminidnsblock.enabled
+    state=/var/mobile/Library/Preferences/com.feijaum.ipadminidnsblock.enabled
+    rm -f "$state" "$state.blocklist" "$state.blocklist.new"
 fi
 if [ "${1:-}" = remove ] && uicache_path=$(command -v uicache); then
     su mobile -c "$uicache_path" || "$uicache_path" || true
