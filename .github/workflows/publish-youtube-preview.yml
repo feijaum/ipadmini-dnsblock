@@ -1,0 +1,27 @@
+name: Publicar prévia do YouTube 0.4.13
+on:
+  push:
+    branches: [downloads/youtube-0.4.13]
+    paths: [.github/workflows/publish-youtube-preview.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'feijaum/ipadmini-dnsblock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verificar e publicar o pacote ARMv7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo '58cf0971b6b576e265171cca7005fec767664df618fbdba8cb4ccb5c8087909a  dnsblock-central-0.4.13.deb' | sha256sum -c -
+          gh release create v0.4.13-youtube.1 'dnsblock-central-0.4.13.deb' \
+            --target b07d5f698cd476915bb64ff920546935b409194d \
+            --prerelease --latest=false \
+            --title 'Central da Casa 0.4.13 — teste de áudio do YouTube' \
+            --notes 'Prévia para iPad mini ARMv7. Instale o .deb no Filza. A reprodução do YouTube ainda precisa ser testada no aparelho.'
