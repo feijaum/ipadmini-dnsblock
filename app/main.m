@@ -109,6 +109,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 }
 
 static const NSTimeInterval PhotoRestDelay = 10 * 60;
+static const NSTimeInterval PhotoRestClockInterval = 30;
 
 @interface CentralApplication : UIApplication
 @property(nonatomic, readonly) NSTimeInterval lastTouch;
@@ -143,7 +144,9 @@ static const NSTimeInterval PhotoRestDelay = 10 * 60;
 @interface PhotoRestView : UIControl
 @property(nonatomic, strong) UIImageView *photo;
 @property(nonatomic, strong) UILabel *clock;
-@property(nonatomic, strong) CAGradientLayer *shade;
+@property(nonatomic) NSUInteger clockPosition;
+@property(nonatomic) NSTimeInterval lastClockMove;
+- (void)moveClockAtTime:(NSTimeInterval)now;
 @end
 
 @implementation PhotoRestView
@@ -165,15 +168,13 @@ static const NSTimeInterval PhotoRestDelay = 10 * 60;
         _photo.clipsToBounds = YES;
         [self addSubview:_photo];
 
-        _shade = [CAGradientLayer layer];
-        _shade.colors = @[(__bridge id)[UIColor clearColor].CGColor,
-                          (__bridge id)[UIColor colorWithWhite:0 alpha:0.72].CGColor];
-        [self.layer addSublayer:_shade];
-
         _clock = Label(self, 64, @"HelveticaNeue-Light", 0xffffff);
         _clock.textAlignment = NSTextAlignmentCenter;
-        _clock.shadowColor = [UIColor colorWithWhite:0 alpha:0.70];
-        _clock.shadowOffset = CGSizeMake(0, 2);
+        _clock.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+        _clock.layer.cornerRadius = 14;
+        _clock.clipsToBounds = YES;
+        _clock.adjustsFontSizeToFitWidth = YES;
+        _lastClockMove = [NSProcessInfo processInfo].systemUptime;
     }
     return self;
 }
@@ -190,13 +191,45 @@ static const NSTimeInterval PhotoRestDelay = 10 * 60;
     self.photo.frame = self.bounds;
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat height = CGRectGetHeight(self.bounds);
+    if (width <= 0 || height <= 0) return;
+
+    const CGPoint positions[] = {
+        {0.5, 1}, {1, 0}, {0, 0.5}, {1, 1},
+        {0.5, 0}, {0, 1}, {1, 0.5}, {0, 0}
+    };
+    CGPoint position = positions[self.clockPosition % (sizeof(positions) / sizeof(*positions))];
+    CGFloat margin = MIN(32, MIN(width, height) * 0.04);
     CGFloat size = MIN(96, MIN(width, height) * 0.12);
-    CGFloat clockHeight = ceil(size * 1.25);
-    CGFloat bottom = MAX(22, height * 0.04);
+    CGFloat clockWidth = MIN(width - 2 * margin, ceil(size * 3.65));
+    CGFloat clockHeight = ceil(size * 1.3);
     self.clock.font = [UIFont fontWithName:@"HelveticaNeue-Light" size:size] ?: [UIFont systemFontOfSize:size];
-    self.clock.frame = CGRectMake(16, height - bottom - clockHeight, width - 32, clockHeight);
-    CGFloat shadeHeight = clockHeight + bottom + size * 0.65;
-    self.shade.frame = CGRectMake(0, height - shadeHeight, width, shadeHeight);
+    self.clock.frame = CGRectMake(margin + (width - 2 * margin - clockWidth) * position.x,
+                                  margin + (height - 2 * margin - clockHeight) * position.y,
+                                  clockWidth, clockHeight);
+}
+
+- (void)moveClockAtTime:(NSTimeInterval)now
+{
+    if (now - self.lastClockMove < PhotoRestClockInterval) return;
+    self.lastClockMove = now;
+    [self layoutIfNeeded];
+    self.clockPosition++;
+    [self setNeedsLayout];
+    [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.6
+        animations:^{ [self layoutIfNeeded]; }];
+}
+@end
+
+@interface PhotoRestController : UIViewController
+@end
+
+@implementation PhotoRestController
+- (BOOL)prefersStatusBarHidden { return YES; }
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad ?
+        UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskPortrait;
 }
 @end
 
@@ -219,6 +252,7 @@ static const NSTimeInterval PhotoRestDelay = 10 * 60;
 @property(nonatomic, strong) UILabel *photoHint;
 @property(nonatomic, strong) UIImageView *photo;
 @property(nonatomic, strong) PhotoRestView *photoRest;
+@property(nonatomic, strong) PhotoRestController *photoRestController;
 @property(nonatomic, strong) UIButton *photoFitButton;
 @property(nonatomic, strong) DrivePhotos *drivePhotos;
 @property(nonatomic, strong) UIButton *filterButton;
@@ -702,6 +736,7 @@ static const NSTimeInterval PhotoRestDelay = 10 * 60;
     CentralApplication *app = (CentralApplication *)[UIApplication sharedApplication];
     if (!self.photoRest && !app.touchesDown && now - app.lastTouch >= PhotoRestDelay)
         [self showPhotoRest];
+    [self.photoRest moveClockAtTime:now];
     if (seconds % 60 == 0) {
         [self refreshStatus];
         [self updateAgenda];
@@ -710,21 +745,32 @@ static const NSTimeInterval PhotoRestDelay = 10 * 60;
 
 - (void)showPhotoRest
 {
-    UIWindow *window = [UIApplication sharedApplication].delegate.window;
-    if (!window) return;
+    UIViewController *presenter = self;
+    while (presenter.presentedViewController) presenter = presenter.presentedViewController;
+    UIWindow *window = presenter.view.window;
+    if (!window || presenter.isBeingPresented || presenter.isBeingDismissed) return;
     [window endEditing:YES];
-    PhotoRestView *rest = [[PhotoRestView alloc] initWithFrame:window.bounds];
+
+    PhotoRestView *rest = [[PhotoRestView alloc] initWithFrame:presenter.view.bounds];
     rest.photo.image = self.photo.image;
     rest.clock.text = self.clock.text;
     rest.accessibilityValue = self.clock.text;
     [rest addTarget:self action:@selector(dismissPhotoRest) forControlEvents:UIControlEventTouchUpInside];
+
+    // UIKit sizes and rotates the full-screen view with the active interface.
+    PhotoRestController *controller = [[PhotoRestController alloc] init];
+    controller.view = rest;
+    controller.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    controller.modalPresentationCapturesStatusBarAppearance = YES;
     self.photoRest = rest;
-    [window addSubview:rest];
+    self.photoRestController = controller;
+    [presenter presentViewController:controller animated:NO completion:nil];
 }
 
 - (void)dismissPhotoRest
 {
-    [self.photoRest removeFromSuperview];
+    [self.photoRestController dismissViewControllerAnimated:NO completion:nil];
+    self.photoRestController = nil;
     self.photoRest = nil;
     [(CentralApplication *)[UIApplication sharedApplication] resetPhotoRestTimer];
 }
