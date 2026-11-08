@@ -7,6 +7,8 @@
 #include <string.h>
 
 static const NSUInteger MaxTrackBytes = 32 * 1024 * 1024;
+static const NSTimeInterval YouTubeTrackTimeout = 300;
+static const NSUInteger MaxAudioResumes = 32;
 
 static BOOL AllowedMusicHost(NSString *host)
 {
@@ -78,12 +80,16 @@ static NSURL *YouTubeTrackDirectory(void)
 }
 
 @interface YouTubeAudioTransport : MusicTransport <NSURLSessionDataDelegate>
+@property(nonatomic, copy) NSURLRequest *request;
 @property(nonatomic, strong) NSURL *destination;
 @property(nonatomic, strong) NSOutputStream *stream;
 @property(nonatomic, strong) NSHTTPURLResponse *response;
 @property(nonatomic, strong) NSError *writeError;
 @property(nonatomic) NSUInteger bytesWritten;
+@property(nonatomic) NSUInteger partStart;
+@property(nonatomic) NSUInteger resumes;
 @property(nonatomic) int64_t expectedBytes;
+@property(nonatomic) int64_t partEnd;
 @property(nonatomic) NSUInteger progressStep;
 @property(nonatomic, copy) void (^progress)(NSUInteger percent);
 @property(nonatomic, copy) void (^finished)(NSURL *, NSHTTPURLResponse *, NSError *);
@@ -99,11 +105,12 @@ static NSURL *YouTubeTrackDirectory(void)
     BOOL audio = [mime isEqualToString:@"audio/mp4"] || [mime isEqualToString:@"application/octet-stream"];
     BOOL allowed = AllowedMusicURL(response.URL) && CentralYouTubeMediaHost(response.URL.host);
     NSInteger status = self.response.statusCode;
-    BOOL accept = allowed && audio && (status == 200 || status == 206);
+    BOOL accept = allowed && audio && (status == 206 || (status == 200 && self.partStart == 0));
+    self.partEnd = 0;
     if (accept) {
         int64_t length = response.expectedContentLength;
         if (status == 206) {
-            long long end = 0, total = 0;
+            long long start = 0, end = 0, total = 0;
             char extra;
             NSString *range = self.response.allHeaderFields[@"Content-Range"];
             if (!range) {
@@ -114,13 +121,15 @@ static NSURL *YouTubeTrackDirectory(void)
                     }
                 }
             }
-            // This request asks for the complete file, even if the server uses HTTP 206.
+            // Append only a contiguous byte range from the same signed audio URL.
             const char *value = range.UTF8String;
-            if (!value || sscanf(value, "bytes 0-%lld/%lld%c", &end, &total, &extra) != 2 ||
-                total <= 0 || end != total - 1 || (length > 0 && length != total)) {
+            if (!value || sscanf(value, "bytes %lld-%lld/%lld%c", &start, &end, &total, &extra) != 3 ||
+                start != (long long)self.partStart || end < start || end >= total ||
+                (length > 0 && length != end - start + 1)) {
                 self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:nil];
                 accept = NO;
             } else {
+                self.partEnd = end + 1;
                 length = total;
             }
         }
@@ -138,7 +147,8 @@ static NSURL *YouTubeTrackDirectory(void)
         }
     }
     if (accept) {
-        self.stream = [NSOutputStream outputStreamWithURL:self.destination append:NO];
+        if (!self.partEnd) self.partEnd = self.expectedBytes;
+        self.stream = [NSOutputStream outputStreamWithURL:self.destination append:self.partStart > 0];
         [self.stream open];
         if (!self.stream || self.stream.streamStatus == NSStreamStatusError) {
             self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotCreateFile userInfo:nil];
@@ -153,6 +163,11 @@ static NSURL *YouTubeTrackDirectory(void)
     if (!self.stream || self.writeError) return;
     if (data.length > MaxTrackBytes - self.bytesWritten) {
         self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil];
+        [task cancel];
+        return;
+    }
+    if (self.partEnd > 0 && (int64_t)self.bytesWritten + (int64_t)data.length > self.partEnd) {
+        self.writeError = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:nil];
         [task cancel];
         return;
     }
@@ -180,12 +195,28 @@ static NSURL *YouTubeTrackDirectory(void)
 
 - (void)URLSession:(NSURLSession *)session task:(__unused NSURLSessionTask *)task didCompleteWithError:(NSError *)error
 {
+    BOOL receivedPart = self.stream != nil;
     [self.stream close];
+    self.stream = nil;
     if (self.writeError) {
         error = self.writeError;
-    } else if (self.response && !self.stream && error.code == NSURLErrorCancelled) {
+    } else if (self.response && !receivedPart && error.code == NSURLErrorCancelled) {
         // An HTTP error or invalid response was rejected before creating a file.
         error = nil;
+    }
+    BOOL interrupted = [error.domain isEqualToString:NSURLErrorDomain] &&
+        (error.code == NSURLErrorNetworkConnectionLost || error.code == NSURLErrorTimedOut);
+    if (receivedPart && (!error || interrupted) && self.expectedBytes > 0 &&
+        self.bytesWritten > self.partStart && (int64_t)self.bytesWritten < self.expectedBytes &&
+        self.resumes < MaxAudioResumes) {
+        self.partStart = self.bytesWritten;
+        self.resumes++;
+        self.response = nil;
+        NSMutableURLRequest *next = [self.request mutableCopy];
+        [next setValue:[NSString stringWithFormat:@"bytes=%lu-", (unsigned long)self.partStart]
+            forHTTPHeaderField:@"Range"];
+        [[session dataTaskWithRequest:next] resume];
+        return;
     }
     NSURL *file = nil;
     if (!error && self.bytesWritten) {
@@ -225,7 +256,7 @@ static NSURL *YouTubeTrackDirectory(void)
 @property(nonatomic) BOOL loadingTitles;
 @property(nonatomic, readwrite) NSUInteger thumbnailRevision;
 @property(nonatomic, readwrite, copy) NSString *currentVideo;
-@property(nonatomic, strong) NSURLSessionTask *download;
+@property(nonatomic, strong) NSURLSession *download;
 @property(nonatomic, strong) AVPlayer *mediaPlayer;
 @property(nonatomic, strong) AVPlayerItem *mediaItem;
 @property(nonatomic) BOOL mediaRequested;
@@ -394,8 +425,9 @@ static NSURL *YouTubeTrackDirectory(void)
     [self.youtubeLookup cancel];
     self.youtubeLookup = nil;
     self.youtubeAudioFailure = nil;
-    [self.download cancel];
+    NSURLSession *download = self.download;
     self.download = nil;
+    [download.delegateQueue addOperationWithBlock:^{ [download invalidateAndCancel]; }];
     [self clearAudio];
 }
 
@@ -515,7 +547,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
     NSString *video = track[@"id"];
     NSUInteger generation = ++self.generation;
     __weak HouseMusic *music = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 75 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(YouTubeTrackTimeout * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         HouseMusic *target = music;
         if (!target || target.generation != generation) return;
         BOOL opening = target.mediaItem && target.mediaItem.status == AVPlayerItemStatusUnknown;
@@ -604,8 +636,9 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
     NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     configuration.HTTPShouldSetCookies = NO;
     configuration.URLCache = nil;
-    configuration.timeoutIntervalForResource = 35;
+    configuration.timeoutIntervalForResource = YouTubeTrackTimeout;
     YouTubeAudioTransport *transport = [[YouTubeAudioTransport alloc] init];
+    transport.request = request;
     NSString *filename = [[[NSUUID UUID] UUIDString] stringByAppendingPathExtension:@"m4a"];
     transport.destination = [directory URLByAppendingPathComponent:filename];
     transport.expectedBytes = length;
@@ -655,9 +688,8 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
             }];
         });
     };
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration delegate:transport delegateQueue:nil];
-    self.download = [session dataTaskWithRequest:request];
-    [self.download resume];
+    self.download = [NSURLSession sessionWithConfiguration:configuration delegate:transport delegateQueue:nil];
+    [[self.download dataTaskWithRequest:request] resume];
     if (self.didUpdate) self.didUpdate();
 }
 

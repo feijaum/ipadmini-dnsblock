@@ -4,9 +4,9 @@ Reaproveite um iPad ou iPhone antigo como bloqueador de anúncios e rastreadores
 
 ## Download
 
-A **Central da Casa 0.4.18** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
+A **Central da Casa 0.4.19** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
 
-1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.4.18-ios.1/dnsblock-central-0.4.18.deb).
+1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.4.19-ios.1/dnsblock-central-0.4.19.deb).
 2. Com o Carbon ativo, abra o arquivo no **Filza** e toque em **Install**. O pacote atualiza o serviço DNS existente e preserva suas configurações. O ícone da Central é um relógio em fundo azul-escuro. Se ele não aparecer, confira se o Cydia tem o pacote **UIKit Tools** instalado, atualize o cache de ícones com `su mobile -c uicache` em um terminal root e faça um respring.
 3. Abra **Central da Casa**. Se você instalou o painel antigo por IPA, ele continua aparecendo como **DNSBlock**. Toque em **Bloqueio** para alternar o filtro. O iPad continua resolvendo DNS com o filtro desligado. O botão **Ajustes** mostra o IP e os contadores, permite selecionar a agenda e adicionar fotos.
 4. Escolha um calendário disponível no app **Calendário** do iPad. Se a conta Google estiver sincronizada com o iOS, selecione o calendário da família. Adicione as fotos pela fototeca do iPad. Para sincronizar uma pasta privada automaticamente, siga a [configuração do Google Drive](integrations/google-drive/README.md). O carrossel embaralha a pasta e tenta trocar a imagem a cada cinco segundos, com uma transição suave. O botão **Ajustar / Preencher** alterna entre a foto inteira e o preenchimento do quadro. A agenda mostra o mês e a legenda das datas ao lado.
@@ -25,7 +25,7 @@ No iPad, abra **Pesquisar no YouTube**, busque pelo nome e toque no resultado. C
 
 A chave da **YouTube Data API v3** em **YouTube → Chave** serve para buscar pelo nome e listar até 50 faixas de uma playlist. Para abrir uma faixa por **Link**, a chave é opcional. Use `com.feijaum.ipadminidnsblock.central` se a restrição da chave estiver configurada para apps iOS.
 
-A reprodução usa uma sessão de visitante temporária, mostra o progresso quando o tamanho é conhecido e valida o M4A antes de abrir no player nativo. Se o link, download ou player falhar, a Central tenta outro perfil dentro do limite de 75 segundos por faixa. A abordagem foi inspirada no [resolvedor iOS do Musike](https://github.com/Ernani1234/musike/blob/41706772a4c1e774e3bf1731ca28711fa1529cf4/mobile/ios/App/App/MusikeYouTube.swift).
+A reprodução usa uma sessão de visitante temporária, mostra o progresso quando o tamanho é conhecido e valida o M4A antes de abrir no player nativo. Se o link, download ou player falhar, a Central tenta outro perfil dentro do limite total de 5 minutos por faixa. Se a conexão cair após receber parte do áudio, a Central tenta retomar do último byte recebido. A abordagem foi inspirada no [resolvedor iOS do Musike](https://github.com/Ernani1234/musike/blob/41706772a4c1e774e3bf1731ca28711fa1529cf4/mobile/ios/App/App/MusikeYouTube.swift).
 
 Esta integração é experimental. Ela depende de o YouTube fornecer um endereço direto de áudio para a faixa e ainda precisa ser testada em um iPad mini com iOS 9. Se houver erro, o cartão indica a etapa (link, armazenamento, download ou player) e mostra o código de rede ou HTTP quando disponível. HTTP 403 indica que o YouTube recusou a entrega do áudio.
 
@@ -74,7 +74,7 @@ Para gerar os pacotes, use um Mac com Xcode/SDK legado que compile para ARMv7 e 
 DEVELOPER_DIR=/Applications/Xcode-7.3.1.app/Contents/Developer make ios
 ```
 
-O script gera `dist/dnsblock-central-0.4.18.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
+O script gera `dist/dnsblock-central-0.4.19.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
 
 ## Configuração da rede
 
