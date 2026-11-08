@@ -25,6 +25,8 @@ No iPad, abra **Música → YouTube**, busque pelo nome e toque no resultado. A 
 
 A chave da **YouTube Data API v3** em **YouTube → Chave** serve para buscar pelo nome e listar até 50 faixas de uma playlist. Para abrir uma faixa por **Link**, a chave é opcional. Use `com.feijaum.ipadminidnsblock.central` se a restrição da chave estiver configurada para apps iOS.
 
+A reprodução usa uma sessão de visitante temporária e tenta perfis alternativos se o YouTube não oferecer AAC ou recusar a entrega. A abordagem foi inspirada no [resolvedor iOS do Musike](https://github.com/Ernani1234/musike/blob/41706772a4c1e774e3bf1731ca28711fa1529cf4/mobile/ios/App/App/MusikeYouTube.swift).
+
 Esta integração é experimental. Ela depende de o YouTube fornecer um endereço direto de áudio para a faixa e ainda precisa ser testada em um iPad mini com iOS 9. Se houver erro, o cartão indica a etapa (link, armazenamento, download ou player) e mostra o código de rede ou HTTP quando disponível. HTTP 403 indica que o YouTube recusou a entrega do áudio.
 
 ## Como funciona
