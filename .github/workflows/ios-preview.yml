@@ -3,7 +3,7 @@ name: Prévia iOS ARMv7
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [downloads/central-0.4.22]
     paths:
       - .github/workflows/ios-preview.yml
       - scripts/build-ios.sh
@@ -75,7 +75,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/downloads/central-0.4.22'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -102,8 +102,8 @@ jobs:
           cat > "$RUNNER_TEMP/ios-notes.md" <<'NOTES'
           Pacote único para ARMv7, com iOS 8.0 como mínimo. Inclui o painel Central da Casa e o serviço DNSBlock.
           Instale o .deb no Filza com o jailbreak ativo e abra Central da Casa. O botão Bloqueio alterna o filtro enquanto o DNS continua respondendo.
-          Compilação e pacote verificados. Instalação e interface ainda precisam ser testadas no aparelho.
+          Acompanha a orientação ativa do iPad no descanso de tela e desloca o relógio a cada 30 segundos. A rotação ainda precisa ser testada no aparelho.
           NOTES
           gh release create "$tag" "dist/$package" dist/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" --prerelease --title "DNSBlock Legacy $version — Central da Casa" \
+            --target "63ed9950d5e41a6b947961d81fa0c4b75a18e6d0" --prerelease --latest=false --title "DNSBlock Legacy $version — Central da Casa" \
             --notes-file "$RUNNER_TEMP/ios-notes.md"
