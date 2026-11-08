@@ -494,7 +494,12 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)updateMusicQueue
 {
-    NSMutableArray *tracks = [self.music.queuedTracks mutableCopy];
+    NSMutableArray *tracks = [NSMutableArray array];
+    for (NSDictionary *track in self.music.queuedTracks) {
+        NSString *video = track[@"id"];
+        NSString *title = [self.music titleForVideo:video] ?: track[@"title"];
+        [tracks addObject:@{@"id":video, @"title":title}];
+    }
     NSArray *remote = self.webVideos ?: @[];
     if (self.pendingWebVideo) remote = [@[self.pendingWebVideo] arrayByAddingObjectsFromArray:remote];
     for (NSString *video in remote) {
@@ -622,9 +627,12 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
                     return;
                 }
             }
-            NSArray *titles = self.webVideos ?: @[];
-            if (self.pendingWebVideo) titles = [@[self.pendingWebVideo] arrayByAddingObjectsFromArray:titles];
-            [self.music loadTitlesForVideos:titles];
+            NSMutableArray *videos = [NSMutableArray array];
+            for (NSDictionary *track in self.music.queuedTracks)
+                if ([track[@"title"] isEqualToString:@"YouTube"]) [videos addObject:track[@"id"]];
+            if (self.pendingWebVideo) [videos addObject:self.pendingWebVideo];
+            if (self.webVideos.count) [videos addObjectsFromArray:self.webVideos];
+            [self.music loadTitlesForVideos:videos];
             [self updateMusicQueue];
         });
     });

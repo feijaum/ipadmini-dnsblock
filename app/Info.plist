@@ -9,8 +9,8 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Central da Casa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.4.16</string>
-    <key>CFBundleVersion</key><string>23</string>
+    <key>CFBundleShortVersionString</key><string>0.4.17</string>
+    <key>CFBundleVersion</key><string>24</string>
     <!-- Allow custom certificate validation for these hosts only. Requests still use HTTPS. -->
     <key>NSAppTransportSecurity</key>
     <dict>

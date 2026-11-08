@@ -507,8 +507,8 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
 - (void)playYouTubeItem:(NSDictionary *)track
 {
     self.currentVideo = track[@"id"];
-    self.trackTitle = track[@"title"];
-    self.summary = [NSString stringWithFormat:@"Buscando áudio de %@…", track[@"title"]];
+    self.trackTitle = [self titleForVideo:self.currentVideo] ?: track[@"title"];
+    self.summary = [NSString stringWithFormat:@"Buscando áudio de %@…", self.trackTitle];
     self.youtubeAudioFailure = nil;
     NSString *video = track[@"id"];
     NSUInteger generation = ++self.generation;
