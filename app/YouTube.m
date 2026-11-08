@@ -165,6 +165,54 @@ static NSURLRequest *DataAPIRequest(NSURLComponents *endpoint, NSString *key)
     return request;
 }
 
+NSURLRequest *CentralYouTubeEmbedTitleRequest(NSString *video)
+{
+    NSURL *watch = WatchURL(video, nil);
+    if (!watch) return nil;
+    NSURLComponents *endpoint = [NSURLComponents componentsWithString:@"https://www.youtube.com/oembed"];
+    endpoint.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"url" value:watch.absoluteString],
+        [NSURLQueryItem queryItemWithName:@"format" value:@"json"]
+    ];
+    return [NSURLRequest requestWithURL:endpoint.URL cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:10];
+}
+
+NSString *CentralYouTubeEmbedTitle(NSData *data)
+{
+    id title = ResponseDictionary(data)[@"title"];
+    return [title isKindOfClass:[NSString class]] && [title length] <= 200 ? title : nil;
+}
+
+NSURLRequest *CentralYouTubeTitlesRequest(NSArray *videos)
+{
+    NSString *key = [[NSUserDefaults standardUserDefaults] stringForKey:KeyPreference];
+    if (!key.length || !videos.count || videos.count > 50) return nil;
+    for (id video in videos) if (!ValidIdentifier(video, 11, 11)) return nil;
+    NSURLComponents *endpoint = [NSURLComponents componentsWithString:@"https://www.googleapis.com/youtube/v3/videos"];
+    endpoint.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"part" value:@"snippet"],
+        [NSURLQueryItem queryItemWithName:@"id" value:[videos componentsJoinedByString:@","]],
+        [NSURLQueryItem queryItemWithName:@"fields" value:@"items(id,snippet/title)"]
+    ];
+    return DataAPIRequest(endpoint, key);
+}
+
+NSDictionary *CentralYouTubeTitles(NSData *data)
+{
+    id items = ResponseDictionary(data)[@"items"];
+    if (![items isKindOfClass:[NSArray class]]) return @{};
+    NSMutableDictionary *titles = [NSMutableDictionary dictionary];
+    for (id item in items) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        id video = item[@"id"];
+        id snippet = item[@"snippet"];
+        id title = [snippet isKindOfClass:[NSDictionary class]] ? snippet[@"title"] : nil;
+        if (ValidIdentifier(video, 11, 11) && [title isKindOfClass:[NSString class]] && [title length])
+            titles[video] = title;
+    }
+    return titles;
+}
+
 NSURLRequest *CentralYouTubePlaylistRequest(NSString *playlist)
 {
     NSString *key = [[NSUserDefaults standardUserDefaults] stringForKey:KeyPreference];

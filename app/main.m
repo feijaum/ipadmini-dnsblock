@@ -6,6 +6,7 @@
 #import <EventKit/EventKit.h>
 #import <arpa/inet.h>
 #import <errno.h>
+#include <math.h>
 #import <sys/socket.h>
 #import <string.h>
 #import <sys/time.h>
@@ -37,7 +38,7 @@ static NSDictionary *RequestStatus(const char *command)
             command += sent;
             left -= (size_t)sent;
         }
-        char buffer[256];
+        char buffer[512];
         while (!left && reply.length < sizeof(buffer)) {
             ssize_t received = recv(fd, buffer, sizeof(buffer), 0);
             if (received < 0 && errno == EINTR) continue;
@@ -47,25 +48,19 @@ static NSDictionary *RequestStatus(const char *command)
         }
     }
     close(fd);
-    if (!reply.length || reply.length > 256) return nil;
+    if (!reply.length || reply.length > 512) return nil;
     id json = [NSJSONSerialization JSONObjectWithData:reply options:0 error:NULL];
     return [json isKindOfClass:[NSDictionary class]] ? json : nil;
 }
 
 static NSString *const CalendarPreference = @"familyCalendar";
-static NSString *const MusicLinksPreference = @"houseMusicLinks";
-
-static NSString *MusicLinkService(NSURL *url)
+static NSString *MusicTime(NSTimeInterval time)
 {
-    if (![url.scheme.lowercaseString isEqualToString:@"https"] || url.user || url.password ||
-        (url.port && url.port.integerValue != 443) || url.path.length < 2) return nil;
-    NSString *host = url.host.lowercaseString;
-    if ([host isEqualToString:@"open.spotify.com"] || [host isEqualToString:@"spotify.link"]) return @"Spotify";
-    if ([host isEqualToString:@"youtu.be"] || [host isEqualToString:@"youtube.com"] ||
-        [host isEqualToString:@"www.youtube.com"] || [host isEqualToString:@"music.youtube.com"] ||
-        [host isEqualToString:@"m.youtube.com"]) return @"YouTube";
-    if ([host isEqualToString:@"music.apple.com"]) return @"Apple Music";
-    return nil;
+    NSUInteger seconds = (NSUInteger)time;
+    if (seconds >= 3600)
+        return [NSString stringWithFormat:@"%lu:%02lu:%02lu", (unsigned long)(seconds / 3600),
+                (unsigned long)(seconds / 60 % 60), (unsigned long)(seconds % 60)];
+    return [NSString stringWithFormat:@"%lu:%02lu", (unsigned long)(seconds / 60), (unsigned long)(seconds % 60)];
 }
 
 static NSString *const PhotoFillPreference = @"photoFillMode";
@@ -136,16 +131,22 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UIButton *settingsButton;
 @property(nonatomic, strong) HouseMusic *music;
 @property(nonatomic) BOOL readingWebQueue;
-@property(nonatomic, strong) NSURL *pendingWebTrack;
+@property(nonatomic, copy) NSString *pendingWebVideo;
+@property(nonatomic, copy) NSArray *webVideos;
+@property(nonatomic, copy) NSArray *visibleMusicQueue;
+@property(nonatomic) NSUInteger thumbnailRevision;
 @property(nonatomic, strong) UIView *musicCard;
 @property(nonatomic, strong) UIScrollView *musicBody;
 @property(nonatomic, strong) UILabel *musicHeading;
 @property(nonatomic, strong) UILabel *musicSummary;
-@property(nonatomic, strong) UIButton *musicAddButton;
-@property(nonatomic, strong) UITableView *musicLinks;
+@property(nonatomic, strong) UIImageView *musicThumb;
+@property(nonatomic, strong) UISlider *musicProgress;
+@property(nonatomic, strong) UILabel *musicTime;
+@property(nonatomic, strong) UILabel *musicQueueHeading;
+@property(nonatomic, strong) UIButton *musicNextButton;
+@property(nonatomic, copy) NSString *seekVideo;
+@property(nonatomic, strong) UITableView *musicQueueTable;
 @property(nonatomic, strong) UILabel *musicEmpty;
-@property(nonatomic, strong) NSMutableArray *savedMusic;
-@property(nonatomic, strong) UIButton *musicSearchButton;
 @property(nonatomic, strong) UIButton *youtubeButton;
 @property(nonatomic, strong) UIButton *musicStopButton;
 @property(nonatomic, strong) UIButton *musicToggleButton;
@@ -197,35 +198,51 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.musicBody = [[UIScrollView alloc] init];
     [self.musicCard addSubview:self.musicBody];
     self.musicHeading = Label(self.musicBody, 13, @"HelveticaNeue-Medium", 0x9adfce);
-    self.musicHeading.text = @"MÚSICA";
-    self.musicSearchButton = Button(self.musicBody, @"♫  Pesquisar música", self, @selector(searchMusic));
-    self.youtubeButton = Button(self.musicBody, @"YouTube", self, @selector(openYouTubeSearch));
+    self.musicHeading.text = @"MÚSICA · YOUTUBE";
+    self.youtubeButton = Button(self.musicBody, @"Pesquisar no YouTube", self, @selector(openYouTubeSearch));
     self.musicStopButton = Button(self.musicBody, @"Parar", self, @selector(stopMusic));
     self.musicToggleButton = Button(self.musicBody, @"Tocar", self, @selector(toggleMusic));
     self.musicSummary = Label(self.musicBody, 14, @"HelveticaNeue-Medium", 0xe9f1ff);
     self.musicSummary.numberOfLines = 2;
-    self.musicAddButton = Button(self.musicBody, @"+  Salvar link", self, @selector(addMusicLink));
-    self.savedMusic = [[[NSUserDefaults standardUserDefaults] arrayForKey:MusicLinksPreference] mutableCopy] ?: [NSMutableArray array];
-    self.musicLinks = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
-    self.musicLinks.backgroundColor = [UIColor clearColor];
-    self.musicLinks.separatorColor = Color(0x34465d);
-    self.musicLinks.rowHeight = 47;
-    self.musicLinks.tableFooterView = [[UIView alloc] initWithFrame:CGRectZero];
-    self.musicLinks.delegate = self;
-    self.musicLinks.dataSource = self;
-    [self.musicBody addSubview:self.musicLinks];
+    self.musicThumb = [[UIImageView alloc] init];
+    self.musicThumb.contentMode = UIViewContentModeScaleAspectFill;
+    self.musicThumb.clipsToBounds = YES;
+    self.musicThumb.layer.cornerRadius = 6;
+    self.musicThumb.backgroundColor = Color(0x263246);
+    [self.musicBody addSubview:self.musicThumb];
+    self.musicProgress = [[UISlider alloc] init];
+    self.musicProgress.accessibilityLabel = @"Posição na faixa";
+    self.musicProgress.minimumTrackTintColor = Color(0x9adfce);
+    [self.musicProgress addTarget:self action:@selector(scrubMusic:) forControlEvents:UIControlEventValueChanged];
+    [self.musicProgress addTarget:self action:@selector(seekMusic:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+    [self.musicProgress addTarget:self action:@selector(cancelMusicSeek) forControlEvents:UIControlEventTouchCancel];
+    [self.musicBody addSubview:self.musicProgress];
+    self.musicTime = Label(self.musicBody, 12, @"HelveticaNeue-Medium", 0xaac1de);
+    self.musicTime.textAlignment = NSTextAlignmentRight;
+    self.musicNextButton = Button(self.musicBody, @"Próxima", self, @selector(skipMusic));
+    self.musicQueueHeading = Label(self.musicBody, 12, @"HelveticaNeue-Medium", 0x9adfce);
+    self.visibleMusicQueue = @[];
+    self.musicQueueTable = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.musicQueueTable.backgroundColor = [UIColor clearColor];
+    self.musicQueueTable.separatorColor = Color(0x34465d);
+    self.musicQueueTable.rowHeight = 54;
+    self.musicQueueTable.allowsSelection = NO;
+    self.musicQueueTable.tableFooterView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.musicQueueTable.delegate = self;
+    self.musicQueueTable.dataSource = self;
+    [self.musicBody addSubview:self.musicQueueTable];
     self.musicEmpty = [[UILabel alloc] init];
-    self.musicEmpty.text = @"Salve um álbum ou playlist aqui.";
+    self.musicEmpty.text = @"As próximas faixas aparecem aqui.";
     self.musicEmpty.textAlignment = NSTextAlignmentCenter;
     self.musicEmpty.numberOfLines = 0;
     self.musicEmpty.font = [UIFont systemFontOfSize:12];
     self.musicEmpty.textColor = Color(0xaac1de);
-    self.musicLinks.backgroundView = self.musicEmpty;
-    self.musicEmpty.hidden = self.savedMusic.count > 0;
+    self.musicQueueTable.backgroundView = self.musicEmpty;
+    self.musicEmpty.hidden = YES;
     __weak HomePanel *musicPanel = self;
     self.music.didUpdate = ^{
         [musicPanel updateMusicButtons];
-        [musicPanel checkWebQueue];
+        if (!musicPanel.music.canStop) [musicPanel checkWebQueue];
     };
     [self updateMusicButtons];
 
@@ -391,24 +408,25 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     CGFloat width = self.musicCard.bounds.size.width;
     CGFloat height = self.musicCard.bounds.size.height;
-    BOOL controls = self.music.canStop;
-    CGFloat contentHeight = MAX(height, controls ? 276 : 228);
+    CGFloat contentHeight = MAX(height, 368);
+    CGFloat inset = 12;
+    CGFloat inner = MAX(0, width - 2 * inset);
+    CGFloat buttonWidth = floor(MAX(0, inner - 12) / 3);
     self.musicBody.frame = self.musicCard.bounds;
     self.musicBody.contentSize = CGSizeMake(width, contentHeight);
     self.musicBody.scrollEnabled = contentHeight > height;
-    CGFloat inset = 12;
-    self.musicHeading.frame = CGRectMake(inset, 8, width - 2 * inset, 20);
-    CGFloat buttonWidth = floor((width - 2 * inset - 6) / 2);
-    self.musicSearchButton.frame = CGRectMake(inset, 34, buttonWidth, 42);
-    self.youtubeButton.frame = CGRectMake(inset + buttonWidth + 6, 34, buttonWidth, 42);
-    self.musicSummary.frame = CGRectMake(inset, 81, width - 2 * inset, 42);
-    self.musicToggleButton.frame = CGRectMake(inset, 129, buttonWidth, 42);
-    self.musicStopButton.frame = self.music.canToggle
-        ? CGRectMake(inset + buttonWidth + 6, 129, buttonWidth, 42)
-        : CGRectMake(inset, 129, width - 2 * inset, 42);
-    CGFloat offset = controls ? 48 : 0;
-    self.musicAddButton.frame = CGRectMake(inset, 129 + offset, width - 2 * inset, 42);
-    self.musicLinks.frame = CGRectMake(inset, 174 + offset, width - 2 * inset, contentHeight - 178 - offset);
+    self.musicHeading.frame = CGRectMake(inset, 8, inner, 20);
+    self.youtubeButton.frame = CGRectMake(inset, 34, inner, 40);
+    self.musicThumb.frame = CGRectMake(inset, 82, 64, 40);
+    CGFloat titleOffset = self.musicThumb.hidden ? 0 : 72;
+    self.musicSummary.frame = CGRectMake(inset + titleOffset, 80, MAX(0, inner - titleOffset), 44);
+    self.musicProgress.frame = CGRectMake(inset, 125, inner, 28);
+    self.musicTime.frame = CGRectMake(inset, 153, inner, 18);
+    self.musicToggleButton.frame = CGRectMake(inset, 177, buttonWidth, 38);
+    self.musicNextButton.frame = CGRectMake(inset + buttonWidth + 6, 177, buttonWidth, 38);
+    self.musicStopButton.frame = CGRectMake(inset + 2 * (buttonWidth + 6), 177, buttonWidth, 38);
+    self.musicQueueHeading.frame = CGRectMake(inset, 224, inner, 20);
+    self.musicQueueTable.frame = CGRectMake(inset, 248, inner, contentHeight - 252);
 }
 
 - (void)openYouTubeSearch
@@ -420,99 +438,108 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self presentViewController:search animated:YES completion:nil];
 }
 
-- (void)searchMusic
-{
-    [self presentViewController:[self.music searchController] animated:YES completion:nil];
-}
-
 - (void)toggleMusic { [self.music togglePlayback]; }
 - (void)stopMusic { [self.music stopPlayback]; }
+- (void)skipMusic { [self.music skipTrack]; }
+
+- (void)scrubMusic:(UISlider *)slider
+{
+    if (slider.tracking) {
+        self.seekVideo = self.music.currentVideo;
+    } else {
+        [self.music seekToSecond:slider.value];
+    }
+    [self updateMusicTime];
+}
+
+- (void)seekMusic:(UISlider *)slider
+{
+    if ([self.seekVideo isEqualToString:self.music.currentVideo]) [self.music seekToSecond:slider.value];
+    self.seekVideo = nil;
+}
+
+- (void)cancelMusicSeek
+{
+    self.seekVideo = nil;
+    [self updateMusicTime];
+}
+
+- (void)updateMusicTime
+{
+    NSTimeInterval duration = self.music.duration;
+    self.musicProgress.enabled = duration > 0;
+    BOOL seeking = [self.seekVideo isEqualToString:self.music.currentVideo];
+    if (!seeking || !self.musicProgress.enabled) {
+        self.musicProgress.maximumValue = duration > 0 ? duration : 1;
+        self.musicProgress.value = self.music.elapsed;
+    }
+    self.musicTime.text = [NSString stringWithFormat:@"%@ / %@",
+        MusicTime(seeking && duration > 0 ? self.musicProgress.value : self.music.elapsed),
+        duration > 0 ? MusicTime(duration) : @"—"];
+    self.musicProgress.accessibilityValue = self.musicTime.text;
+}
 
 - (void)updateMusicButtons
 {
     self.musicSummary.text = self.music.summary;
+    self.musicThumb.hidden = !self.music.currentVideo.length;
+    self.musicThumb.image = [self.music thumbnailForVideo:self.music.currentVideo];
     [self.musicToggleButton setTitle:(self.music.playing ? @"Pausar" : @"Tocar") forState:UIControlStateNormal];
-    self.musicToggleButton.hidden = !self.music.canToggle;
-    self.musicStopButton.hidden = !self.music.canStop;
+    self.musicToggleButton.enabled = self.music.canToggle;
+    self.musicStopButton.enabled = self.music.canStop;
+    [self updateMusicTime];
+    [self updateMusicQueue];
     [self.view setNeedsLayout];
 }
 
-- (void)addMusicLink
+- (void)updateMusicQueue
 {
-    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"Salvar álbum ou playlist"
-        message:@"Cole um link de um vídeo ou playlist do YouTube, do Spotify ou do Apple Music."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Nome do atalho"; }];
-    [form addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"Link de compartilhamento";
-        field.keyboardType = UIKeyboardTypeURL;
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    [form addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
-    __weak UIAlertController *weakForm = form;
-    [form addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        NSArray *fields = weakForm.textFields;
-        if (fields.count != 2) return;
-        NSCharacterSet *spaces = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-        NSString *name = [[fields[0] text] stringByTrimmingCharactersInSet:spaces];
-        NSString *address = [[fields[1] text] stringByTrimmingCharactersInSet:spaces];
-        NSString *service = MusicLinkService([NSURL URLWithString:address]);
-        if (!service || address.length > 2000) {
-            [self message:@"Link de música" body:@"Cole um link HTTPS de compartilhamento de um dos serviços indicados."];
-            return;
-        }
-        [self.savedMusic insertObject:@{@"name":name.length ? name : service, @"url":address, @"service":service} atIndex:0];
-        [self saveMusicLinks];
-    }]];
-    [self presentViewController:form animated:YES completion:nil];
-}
-
-- (void)saveMusicLinks
-{
-    [[NSUserDefaults standardUserDefaults] setObject:self.savedMusic forKey:MusicLinksPreference];
-    self.musicEmpty.hidden = self.savedMusic.count > 0;
-    [self.musicLinks reloadData];
+    NSMutableArray *tracks = [self.music.queuedTracks mutableCopy];
+    NSArray *remote = self.webVideos ?: @[];
+    if (self.pendingWebVideo) remote = [@[self.pendingWebVideo] arrayByAddingObjectsFromArray:remote];
+    for (NSString *video in remote) {
+        NSString *title = [self.music titleForVideo:video] ?: [NSString stringWithFormat:@"YouTube · %@", video];
+        [tracks addObject:@{@"id":video, @"title":title}];
+    }
+    self.musicNextButton.enabled = self.music.currentVideo.length && tracks.count;
+    self.musicQueueHeading.text = [NSString stringWithFormat:@"A SEGUIR  ·  %lu", (unsigned long)tracks.count];
+    self.musicEmpty.hidden = tracks.count > 0;
+    if (![self.visibleMusicQueue isEqualToArray:tracks] || self.thumbnailRevision != self.music.thumbnailRevision) {
+        self.visibleMusicQueue = tracks;
+        self.thumbnailRevision = self.music.thumbnailRevision;
+        [self.musicQueueTable reloadData];
+    }
 }
 
 - (NSInteger)tableView:(__unused UITableView *)table numberOfRowsInSection:(__unused NSInteger)section
 {
-    return self.savedMusic.count;
+    return self.visibleMusicQueue.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)path
 {
-    UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"SavedMusic"];
+    UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"QueuedMusic"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"SavedMusic"];
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"QueuedMusic"];
         cell.backgroundColor = [UIColor clearColor];
-        cell.textLabel.textColor = Color(0xe9f1ff);
-        cell.textLabel.font = [UIFont boldSystemFontOfSize:13];
-        cell.detailTextLabel.textColor = Color(0xaac1de);
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        UIImageView *thumb = [[UIImageView alloc] initWithFrame:CGRectMake(0, 9, 60, 36)];
+        thumb.tag = 1;
+        thumb.contentMode = UIViewContentModeScaleAspectFill;
+        thumb.clipsToBounds = YES;
+        thumb.layer.cornerRadius = 4;
+        thumb.backgroundColor = Color(0x263246);
+        [cell.contentView addSubview:thumb];
+        UILabel *title = Label(cell.contentView, 13, @"HelveticaNeue-Medium", 0xe9f1ff);
+        title.tag = 2;
+        title.frame = CGRectMake(68, 3, MAX(0, cell.contentView.bounds.size.width - 74), 48);
+        title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        title.numberOfLines = 2;
     }
-    NSDictionary *link = self.savedMusic[path.row];
-    cell.textLabel.text = link[@"name"];
-    cell.detailTextLabel.text = link[@"service"];
+    NSDictionary *track = self.visibleMusicQueue[path.row];
+    [(UIImageView *)[cell.contentView viewWithTag:1] setImage:[self.music thumbnailForVideo:track[@"id"]]];
+    [(UILabel *)[cell.contentView viewWithTag:2] setText:track[@"title"]];
+    cell.accessibilityLabel = track[@"title"];
     return cell;
-}
-
-- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path
-{
-    [table deselectRowAtIndexPath:path animated:YES];
-    NSURL *url = [NSURL URLWithString:self.savedMusic[path.row][@"url"]];
-    NSURL *youtube = CentralYouTubeWatchURL(url);
-    if (youtube) [self.music playYouTube:youtube title:self.savedMusic[path.row][@"name"] ?: @"YouTube"];
-    else if (MusicLinkService(url)) [[UIApplication sharedApplication] openURL:url];
-}
-
-- (void)tableView:(__unused UITableView *)table commitEditingStyle:(UITableViewCellEditingStyle)style
-    forRowAtIndexPath:(NSIndexPath *)path
-{
-    if (style != UITableViewCellEditingStyleDelete) return;
-    [self.savedMusic removeObjectAtIndex:path.row];
-    [self saveMusicLinks];
 }
 
 - (void)updateBattery:(__unused NSNotification *)notification
@@ -560,6 +587,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 - (void)tick:(NSTimer *)timer
 {
     [self updateClock];
+    [self updateMusicTime];
     [self checkWebQueue];
     NSInteger seconds = (NSInteger)[NSDate date].timeIntervalSince1970;
     if ([NSProcessInfo processInfo].systemUptime - self.lastPhotoChange >= 5) [self nextPhoto];
@@ -571,28 +599,33 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)checkWebQueue
 {
-    if (self.music.canStop || self.readingWebQueue) return;
-    if (self.pendingWebTrack) {
-        NSURL *track = self.pendingWebTrack;
-        self.pendingWebTrack = nil;
-        [self.music playYouTube:track title:@"Pedido pelo Wi-Fi"];
-        return;
+    if (self.readingWebQueue) return;
+    if (!self.music.canStop && self.pendingWebVideo) {
+        NSString *video = self.pendingWebVideo;
+        self.pendingWebVideo = nil;
+        NSURL *url = CentralYouTubeWatchURL([NSURL URLWithString:[@"https://youtu.be/" stringByAppendingString:video]]);
+        if (url) [self.music playYouTube:url title:[self.music titleForVideo:video] ?: @"Pedido pelo Wi-Fi"];
     }
 
+    BOOL takeNext = !self.music.canStop && !self.pendingWebVideo;
     self.readingWebQueue = YES;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        id video = RequestStatus("next\n")[@"video"];
-        NSURL *track = nil;
-        if ([video isKindOfClass:[NSString class]] && [video length] == 11) {
-            NSURL *link = [NSURL URLWithString:[@"https://youtu.be/" stringByAppendingString:video]];
-            track = CentralYouTubeWatchURL(link);
-        }
+        id next = takeNext ? RequestStatus("next\n")[@"video"] : nil;
+        id queue = RequestStatus("queue\n")[@"queue"];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.readingWebQueue = NO;
-            if (track) {
-                self.pendingWebTrack = track;
-                [self checkWebQueue];
+            if ([queue isKindOfClass:[NSArray class]]) self.webVideos = queue;
+            if ([next isKindOfClass:[NSString class]] && [next length] == 11) {
+                self.pendingWebVideo = next;
+                if (!self.music.canStop) {
+                    [self checkWebQueue];
+                    return;
+                }
             }
+            NSArray *titles = self.webVideos ?: @[];
+            if (self.pendingWebVideo) titles = [@[self.pendingWebVideo] arrayByAddingObjectsFromArray:titles];
+            [self.music loadTitlesForVideos:titles];
+            [self updateMusicQueue];
         });
     });
 }

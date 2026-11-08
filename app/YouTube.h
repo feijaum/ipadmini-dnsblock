@@ -11,3 +11,8 @@ NSURL *CentralYouTubeAudioURL(NSData *data, int64_t *contentLength);
 NSURLRequest *CentralYouTubePlaylistRequest(NSString *playlist);
 NSArray *CentralYouTubePlaylistItems(NSData *data);
 UIViewController *CentralYouTubeSearch(NSURLSession *session, void (^selection)(NSURL *url, NSString *title));
+
+NSURLRequest *CentralYouTubeTitlesRequest(NSArray *videos);
+NSDictionary *CentralYouTubeTitles(NSData *data);
+NSURLRequest *CentralYouTubeEmbedTitleRequest(NSString *video);
+NSString *CentralYouTubeEmbedTitle(NSData *data);

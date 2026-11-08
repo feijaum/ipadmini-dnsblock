@@ -738,6 +738,21 @@ static void send_next_video(int client, int64_t deadline)
     }
 }
 
+static void send_queue_snapshot(int client, int64_t deadline)
+{
+    char response[32 + QUEUE_LIMIT * (VIDEO_ID_SIZE + 2)];
+    size_t used = (size_t)snprintf(response, sizeof(response), "{\"queue\":[");
+    pthread_mutex_lock(&music_queue.lock);
+    for (size_t i = 0; i < music_queue.count; i++) {
+        const char *video = music_queue.videos[(music_queue.head + i) % QUEUE_LIMIT];
+        used += (size_t)snprintf(response + used, sizeof(response) - used,
+                                 "%s\"%s\"", i ? "," : "", video);
+    }
+    pthread_mutex_unlock(&music_queue.lock);
+    used += (size_t)snprintf(response + used, sizeof(response) - used, "]}\n");
+    (void)transfer(client, response, used, true, deadline);
+}
+
 static void *control_loop(void *argument)
 {
     int fd = *(int *)argument;
@@ -752,6 +767,12 @@ static void *control_loop(void *argument)
 
         if (len == 5 && !memcmp(command, "next\n", len)) {
             send_next_video(client, deadline);
+            close(client);
+            continue;
+        }
+
+        if (len == 6 && !memcmp(command, "queue\n", len)) {
+            send_queue_snapshot(client, deadline);
             close(client);
             continue;
         }

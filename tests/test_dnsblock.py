@@ -170,7 +170,9 @@ class DNSBlockTest(unittest.TestCase):
         self.assertIn("2 de 30", self.web("GET", "/added")[2])
         self.assertEqual(self.web("POST", "/disable")[0], 404)
         self.assertTrue(self.control(b"status\n")["enabled"])
+        self.assertEqual(self.control(b"queue\n"), {"queue": ["dQw4w9WgXcQ", "jNQXAC9IVRw"]})
         self.assertEqual(self.control(b"next\n"), {"video": "dQw4w9WgXcQ"})
+        self.assertEqual(self.control(b"queue\n"), {"queue": ["jNQXAC9IVRw"]})
         self.assertEqual(self.control(b"next\n"), {"video": "jNQXAC9IVRw"})
         self.assertEqual(self.control(b"next\n"), {})
 
@@ -192,6 +194,7 @@ class DNSBlockTest(unittest.TestCase):
         for _ in range(30):
             self.assertEqual(self.enqueue(token, link)[0], 303)
         self.assertEqual(self.enqueue(token, link)[0], 503)
+        self.assertEqual(self.control(b"queue\n"), {"queue": ["dQw4w9WgXcQ"] * 30})
         self.assertEqual(self.control(b"next\n"), {"video": "dQw4w9WgXcQ"})
         self.assertEqual(self.enqueue(token, link)[0], 303)
 

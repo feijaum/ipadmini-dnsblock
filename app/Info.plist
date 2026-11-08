@@ -9,8 +9,8 @@
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Central da Casa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.4.15</string>
-    <key>CFBundleVersion</key><string>22</string>
+    <key>CFBundleShortVersionString</key><string>0.4.16</string>
+    <key>CFBundleVersion</key><string>23</string>
     <!-- Allow custom certificate validation for these hosts only. Requests still use HTTPS. -->
     <key>NSAppTransportSecurity</key>
     <dict>
@@ -40,14 +40,7 @@
         <key>i.ytimg.com</key><dict>
             <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict>
-        <key>audius.co</key><dict>
-            <key>NSIncludesSubdomains</key><true/>
-            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         </dict>
-        <key>r2.cloudflarestorage.com</key><dict>
-            <key>NSIncludesSubdomains</key><true/>
-            <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
-        </dict></dict>
     </dict>
     <key>UIBackgroundModes</key><array><string>audio</string></array>
     <key>NSLocationWhenInUseUsageDescription</key><string>Usa sua localização aproximada para consultar o clima da região enquanto a Central estiver aberta.</string>
