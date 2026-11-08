@@ -257,6 +257,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.date.adjustsFontSizeToFitWidth = YES;
     self.weatherLabel = Label(self.clockCard, 16, @"HelveticaNeue-Medium", 0xe7f3ff);
     self.weatherLabel.textAlignment = NSTextAlignmentCenter;
+    self.weatherLabel.numberOfLines = 2;
     self.weatherLabel.adjustsFontSizeToFitWidth = YES;
     self.weather = [[LocalWeather alloc] initWithBackdrop:self.view label:self.weatherLabel];
 
@@ -373,8 +374,10 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     CGFloat clockFaceHeight = clockHeight * 0.57;
     self.clock.font = [UIFont fontWithName:@"HelveticaNeue-Light" size:MIN(110, clockFaceHeight * 0.88)];
     self.clock.frame = CGRectMake(12, clockHeight * 0.07, clockWidth - 24, clockFaceHeight);
-    self.date.frame = CGRectMake(12, clockHeight * 0.66, clockWidth - 24, clockHeight * 0.16);
-    self.weatherLabel.frame = CGRectMake(12, clockHeight * 0.82, clockWidth - 24, clockHeight * 0.14);
+    self.date.frame = CGRectMake(12, clockHeight * 0.64, clockWidth - 24, clockHeight * 0.14);
+    CGFloat weatherHeight = clockHeight * 0.20;
+    self.weatherLabel.font = [UIFont fontWithName:@"HelveticaNeue-Medium" size:MIN(16, MAX(8, floor(weatherHeight / 2.4)))];
+    self.weatherLabel.frame = CGRectMake(12, clockHeight * 0.78, clockWidth - 24, weatherHeight);
     CGFloat agendaWidth = self.agendaCard.bounds.size.width;
     CGFloat agendaHeight = self.agendaCard.bounds.size.height;
     self.agendaHeading.frame = CGRectMake(16, 10, agendaWidth - 32, 20);
@@ -912,7 +915,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 - (void)confirmLocalWeather
 {
     UIAlertController *prompt = [UIAlertController alertControllerWithTitle:@"Clima da sua região"
-        message:@"A Central usa a localização apenas enquanto está aberta. Se você ativar, envia uma posição aproximada à Open-Meteo para consultar o clima, sem usar sua conta Google."
+        message:@"Enquanto está aberta, a Central usa a localização do iPad, que pode ser estimada pelo Wi-Fi. Para consultar o clima, envia à Open-Meteo coordenadas arredondadas em passos de cerca de 1 km."
         preferredStyle:UIAlertControllerStyleAlert];
     [prompt addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
     [prompt addAction:[UIAlertAction actionWithTitle:@"Ativar clima" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -969,6 +972,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
             : @"\nFila da Casa: página indisponível"];
     }
     detail = [detail stringByAppendingFormat:@"\n\n%@\nDados meteorológicos: Open-Meteo.", self.drivePhotos.status];
+    if (self.weather.locationDetail.length)
+        detail = [detail stringByAppendingFormat:@"\nClima: %@", self.weather.locationDetail];
     UIAlertController *settings = [UIAlertController alertControllerWithTitle:@"Configurações" message:detail
         preferredStyle:UIAlertControllerStyleActionSheet];
     [settings addAction:[UIAlertAction actionWithTitle:@"Atualizar estado do DNS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {

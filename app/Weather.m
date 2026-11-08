@@ -6,6 +6,8 @@
 
 static NSString *const WeatherHost = @"api.open-meteo.com";
 static NSString *const LocalWeatherPreference = @"useLocalWeather";
+static const CLLocationAccuracy PreferredWeatherAccuracy = 300;
+static const CLLocationAccuracy MaximumWeatherAccuracy = 5000;
 
 typedef NS_ENUM(NSInteger, WeatherSky) {
     WeatherSkyIdle, WeatherSkyClear, WeatherSkyPartlyCloudy, WeatherSkyCloudy,
@@ -23,7 +25,7 @@ static WeatherSky SkyForCode(NSInteger code)
         case 61: case 63: case 65: case 66: case 67:
         case 80: case 81: case 82: return WeatherSkyRain;
         case 71: case 73: case 75: case 77: case 85: case 86: return WeatherSkySnow;
-        case 95: case 96: case 99: return WeatherSkyStorm;
+        case 95: case 96: case 97: case 99: return WeatherSkyStorm;
         default: return WeatherSkyIdle;
     }
 }
@@ -278,6 +280,8 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
 @property(nonatomic, strong) SkyView *skyView;
 @property(nonatomic, weak) UILabel *label;
 @property(nonatomic, strong) CLLocationManager *locationManager;
+@property(nonatomic, strong) CLLocation *bestLocation;
+@property(nonatomic, copy, readwrite) NSString *locationDetail;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong) NSURLSessionDataTask *task;
 @property(nonatomic, strong) NSURLSession *session;
@@ -304,7 +308,7 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
             delegate:[[WeatherTransport alloc] init] delegateQueue:nil];
         _locationManager = [[CLLocationManager alloc] init];
         _locationManager.delegate = self;
-        _locationManager.desiredAccuracy = kCLLocationAccuracyKilometer;
+        _locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters;
     }
     return self;
 }
@@ -330,6 +334,7 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     self.timer = nil;
     [self.locationManager stopUpdatingLocation];
     self.locating = NO;
+    self.bestLocation = nil;
     [self.task cancel];
     self.task = nil;
     self.requestID++;
@@ -349,6 +354,7 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     [self pause];
     self.updatedAt = nil;
     self.lastSummary = nil;
+    self.locationDetail = nil;
     self.skyView.sky = WeatherSkyIdle;
     self.skyView.daylight = NO;
     [self.skyView redraw];
@@ -382,15 +388,12 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     if (!self.active || !self.enabled || self.locating || self.task ||
         (authorization != kCLAuthorizationStatusAuthorizedWhenInUse && authorization != kCLAuthorizationStatusAuthorizedAlways)) return;
     self.locating = YES;
+    self.bestLocation = nil;
     if (!self.lastSummary) self.label.text = @"Buscando o clima local…";
     NSUInteger request = ++self.requestID;
     [self.locationManager startUpdatingLocation];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        if (self.requestID == request && self.locating) {
-            [self.locationManager stopUpdatingLocation];
-            self.locating = NO;
-            [self showError:@"Localização indisponível"];
-        }
+        if (self.requestID == request && self.locating) [self finishLocating];
     });
 }
 
@@ -403,6 +406,7 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
         [self pause];
         self.updatedAt = nil;
         self.lastSummary = nil;
+        self.locationDetail = nil;
         self.skyView.sky = WeatherSkyIdle;
         self.skyView.daylight = NO;
         [self.skyView redraw];
@@ -411,25 +415,42 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     }
 }
 
-- (void)locationManager:(CLLocationManager *)manager didFailWithError:(NSError *)error
+- (void)locationManager:(__unused CLLocationManager *)manager didFailWithError:(NSError *)error
 {
     if (!self.locating || error.code == kCLErrorLocationUnknown) return;
-    [manager stopUpdatingLocation];
-    self.locating = NO;
-    [self showError:@"Localização indisponível"];
+    if (error.code == kCLErrorDenied) self.bestLocation = nil;
+    [self finishLocating];
 }
 
-- (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray *)locations
+- (void)locationManager:(__unused CLLocationManager *)manager didUpdateLocations:(NSArray *)locations
 {
-    CLLocation *location = locations.lastObject;
-    if (!self.active || !self.locating || !location || location.horizontalAccuracy < 0 ||
-        !CLLocationCoordinate2DIsValid(location.coordinate) || fabs([location.timestamp timeIntervalSinceNow]) > 120) return;
-    [manager stopUpdatingLocation];
-    self.locating = NO;
+    if (!self.active || !self.locating) return;
+    for (CLLocation *location in locations) {
+        NSTimeInterval age = -[location.timestamp timeIntervalSinceNow];
+        CLLocationAccuracy accuracy = location.horizontalAccuracy;
+        if (!isfinite(accuracy) || accuracy <= 0 || accuracy > MaximumWeatherAccuracy ||
+            !CLLocationCoordinate2DIsValid(location.coordinate) || age < -5 || age > 30) continue;
+        if (!self.bestLocation || accuracy <= self.bestLocation.horizontalAccuracy)
+            self.bestLocation = location;
+    }
+    if (self.bestLocation && self.bestLocation.horizontalAccuracy <= PreferredWeatherAccuracy) [self finishLocating];
+}
 
-    // Send only the nearest tenth of a degree (~11 km between latitude grid points).
+- (void)finishLocating
+{
+    [self.locationManager stopUpdatingLocation];
+    self.locating = NO;
+    CLLocation *location = self.bestLocation;
+    self.bestLocation = nil;
+    if (!location) {
+        [self showError:@"Localização indisponível"];
+        return;
+    }
+
+    // Use the iPad's location estimate, rounded to about 1 km before transmission.
     NSString *endpoint = [NSString stringWithFormat:
-        @"https://%@/v1/forecast?latitude=%.1f&longitude=%.1f&current=temperature_2m,weather_code,is_day",
+        @"https://%@/v1/forecast?latitude=%.2f&longitude=%.2f&timeformat=unixtime"
+        "&current=temperature_2m,apparent_temperature,weather_code,is_day,cloud_cover",
         WeatherHost, location.coordinate.latitude, location.coordinate.longitude];
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:endpoint]
         cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];
@@ -447,20 +468,28 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (self.requestID != requestID) return;
                 self.task = nil;
-                [self applyCurrent:current];
+                [self applyCurrent:current accuracy:location.horizontalAccuracy];
             });
         }];
     [self.task resume];
 }
 
-- (void)applyCurrent:(NSDictionary *)current
+- (void)applyCurrent:(NSDictionary *)current accuracy:(CLLocationAccuracy)accuracy
 {
     NSNumber *code = current[@"weather_code"];
     NSNumber *temperature = current[@"temperature_2m"];
     NSNumber *isDay = current[@"is_day"];
+    NSNumber *timestamp = current[@"time"];
     if (![code isKindOfClass:[NSNumber class]] || ![temperature isKindOfClass:[NSNumber class]] ||
-        ![isDay isKindOfClass:[NSNumber class]] || !isfinite(temperature.doubleValue)) {
+        ![isDay isKindOfClass:[NSNumber class]] || !isfinite(temperature.doubleValue) ||
+        ![timestamp isKindOfClass:[NSNumber class]] || !isfinite(timestamp.doubleValue)) {
         [self showError:@"Clima indisponível"];
+        return;
+    }
+    NSDate *reading = [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
+    NSTimeInterval age = -[reading timeIntervalSinceNow];
+    if (age < -15 * 60 || age >= 2 * 60 * 60) {
+        [self showError:@"Leitura do clima fora de horário"];
         return;
     }
     WeatherSky sky = SkyForCode(code.integerValue);
@@ -468,7 +497,9 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     NSString *conditions;
     switch (sky) {
         case WeatherSkyClear: conditions = daylight ? @"Ensolarado" : @"Céu limpo"; break;
-        case WeatherSkyPartlyCloudy: conditions = @"Parcialmente nublado"; break;
+        case WeatherSkyPartlyCloudy:
+            conditions = code.integerValue == 1 ? (daylight ? @"Predomínio de sol" : @"Céu quase limpo") : @"Parcialmente nublado";
+            break;
         case WeatherSkyCloudy: conditions = @"Nublado"; break;
         case WeatherSkyFog: conditions = @"Neblina"; break;
         case WeatherSkyRain: conditions = @"Chuva"; break;
@@ -476,9 +507,24 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
         case WeatherSkySnow: conditions = @"Neve"; break;
         default: conditions = @"Clima local"; break;
     }
-    self.lastSummary = [NSString stringWithFormat:@"%.0f °C  ·  %@", temperature.doubleValue, conditions];
-    self.updatedAt = [NSDate date];
-    self.label.text = self.lastSummary;
+    NSMutableString *summary = [NSMutableString stringWithFormat:@"%.0f °C  ·  %@", temperature.doubleValue, conditions];
+    NSMutableArray *details = [NSMutableArray array];
+    NSNumber *apparent = current[@"apparent_temperature"];
+    NSNumber *cloud = current[@"cloud_cover"];
+    if ([apparent isKindOfClass:[NSNumber class]] && isfinite(apparent.doubleValue))
+        [details addObject:[NSString stringWithFormat:@"Sensação %.0f °C", apparent.doubleValue]];
+    if ([cloud isKindOfClass:[NSNumber class]] && cloud.doubleValue >= 0 && cloud.doubleValue <= 100)
+        [details addObject:[NSString stringWithFormat:@"Nuvens %.0f%%", cloud.doubleValue]];
+    if (accuracy > 1000) [details addObject:@"local aproximado"];
+    if (details.count) [summary appendFormat:@"\n%@", [details componentsJoinedByString:@"  ·  "]];
+    self.lastSummary = summary;
+    self.updatedAt = reading;
+    NSString *precision = accuracy >= 1000 ?
+        [NSString localizedStringWithFormat:@"%.1f km", accuracy / 1000] :
+        [NSString localizedStringWithFormat:@"%.0f m", accuracy];
+    self.locationDetail = [NSString stringWithFormat:@"Localização do iPad ±%@  ·  leitura às %@", precision,
+        [NSDateFormatter localizedStringFromDate:reading dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterShortStyle]];
+    self.label.text = age >= 30 * 60 ? [summary stringByAppendingString:@"  ·  última leitura"] : summary;
     if (self.skyView.sky != sky || self.skyView.daylight != daylight) {
         self.skyView.sky = sky;
         self.skyView.daylight = daylight;
@@ -493,6 +539,7 @@ static UIColor *Shade(NSUInteger rgb, CGFloat alpha)
     } else {
         self.lastSummary = nil;
         self.updatedAt = nil;
+        self.locationDetail = nil;
         self.label.text = message;
         self.skyView.sky = WeatherSkyIdle;
         self.skyView.daylight = NO;

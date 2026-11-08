@@ -5,6 +5,7 @@
 - (void)resume;
 - (void)pause;
 @property(nonatomic, readonly, getter=isEnabled) BOOL enabled;
+@property(nonatomic, readonly, copy) NSString *locationDetail;
 - (void)enable;
 - (void)disable;
 @end
