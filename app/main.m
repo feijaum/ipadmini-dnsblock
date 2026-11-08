@@ -135,6 +135,8 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UIButton *filterButton;
 @property(nonatomic, strong) UIButton *settingsButton;
 @property(nonatomic, strong) HouseMusic *music;
+@property(nonatomic) BOOL readingWebQueue;
+@property(nonatomic, strong) NSURL *pendingWebTrack;
 @property(nonatomic, strong) UIView *musicCard;
 @property(nonatomic, strong) UIScrollView *musicBody;
 @property(nonatomic, strong) UILabel *musicHeading;
@@ -221,7 +223,10 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     self.musicLinks.backgroundView = self.musicEmpty;
     self.musicEmpty.hidden = self.savedMusic.count > 0;
     __weak HomePanel *musicPanel = self;
-    self.music.didUpdate = ^{ [musicPanel updateMusicButtons]; };
+    self.music.didUpdate = ^{
+        [musicPanel updateMusicButtons];
+        [musicPanel checkWebQueue];
+    };
     [self updateMusicButtons];
 
     self.clockCard = Card(self.view, 0x131f33);
@@ -537,6 +542,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self updateBattery:nil];
     [self updateClock];
     [self refreshStatus];
+    [self checkWebQueue];
     [self updateAgenda];
     if (!self.timer) {
         self.timer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
@@ -554,12 +560,41 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 - (void)tick:(NSTimer *)timer
 {
     [self updateClock];
+    [self checkWebQueue];
     NSInteger seconds = (NSInteger)[NSDate date].timeIntervalSince1970;
     if ([NSProcessInfo processInfo].systemUptime - self.lastPhotoChange >= 5) [self nextPhoto];
     if (seconds % 60 == 0) {
         [self refreshStatus];
         [self updateAgenda];
     }
+}
+
+- (void)checkWebQueue
+{
+    if (self.music.canStop || self.readingWebQueue) return;
+    if (self.pendingWebTrack) {
+        NSURL *track = self.pendingWebTrack;
+        self.pendingWebTrack = nil;
+        [self.music playYouTube:track title:@"Pedido pelo Wi-Fi"];
+        return;
+    }
+
+    self.readingWebQueue = YES;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        id video = RequestStatus("next\n")[@"video"];
+        NSURL *track = nil;
+        if ([video isKindOfClass:[NSString class]] && [video length] == 11) {
+            NSURL *link = [NSURL URLWithString:[@"https://youtu.be/" stringByAppendingString:video]];
+            track = CentralYouTubeWatchURL(link);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.readingWebQueue = NO;
+            if (track) {
+                self.pendingWebTrack = track;
+                [self checkWebQueue];
+            }
+        });
+    });
 }
 
 - (void)refreshStatus { [self runCommand:"status\n" changing:NO]; }
@@ -885,6 +920,12 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
         NSString *list = automaticDomains.unsignedIntegerValue
             ? [NSString stringWithFormat:@"%@ domínios", automaticDomains] : @"aguardando a primeira atualização";
         detail = [detail stringByAppendingFormat:@"\nLista automática: %@", list];
+    }
+    NSNumber *webQueue = self.status[@"web_queue"];
+    if ([webQueue isKindOfClass:[NSNumber class]]) {
+        detail = [detail stringByAppendingString:webQueue.boolValue
+            ? [NSString stringWithFormat:@"\nFila da Casa: http://%@", self.status[@"ip"]]
+            : @"\nFila da Casa: página indisponível"];
     }
     detail = [detail stringByAppendingFormat:@"\n\n%@\nDados meteorológicos: Open-Meteo.", self.drivePhotos.status];
     UIAlertController *settings = [UIAlertController alertControllerWithTitle:@"Configurações" message:detail

@@ -1,0 +1,18 @@
+static const char music_page[] =
+    "<!doctype html><html lang=pt-BR><meta charset=utf-8>"
+    "<meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<title>Fila da Casa</title><style>"
+    "*{box-sizing:border-box}body{margin:0;padding:36px 18px;background:#111b2a;color:#e9f1ff;"
+    "font:16px/1.55 system-ui,sans-serif}main{max-width:480px;margin:auto;padding:24px;"
+    "background:#1a2637;border-radius:20px}h1{margin:0;color:#9adfce}"
+    "form{display:grid;gap:10px}input,button{padding:12px;border-radius:10px;font:inherit}"
+    "input{min-width:0;border:1px solid #64748b}button{border:0;background:#9adfce;color:#111b2a;"
+    "font-weight:bold;cursor:pointer}small{display:block;margin-top:16px;color:#a9bbd2}"
+    "</style><main><h1>Fila da Casa</h1>"
+    "<p>Mande uma música do YouTube para o iPad.</p>"
+    "<p role=status>%s</p><form method=post action=/queue>"
+    "<input type=hidden name=token value='%s'>"
+    "<label for=link>Link do YouTube</label>"
+    "<input id=link name=link type=url placeholder='https://youtu.be/…' maxlength=1024 required>"
+    "<button type=submit>Adicionar à fila</button></form>"
+    "<small>%zu de %u pedidos aguardando. As músicas tocam na ordem de envio.</small></main></html>";

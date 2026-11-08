@@ -117,6 +117,13 @@ NSString *CentralYouTubeVisitorData(NSData *data)
     return [visitor isKindOfClass:[NSString class]] && [visitor length] <= 1024 ? visitor : nil;
 }
 
+NSString *CentralYouTubeVideoTitle(NSData *data)
+{
+    id details = ResponseDictionary(data)[@"videoDetails"];
+    id title = [details isKindOfClass:[NSDictionary class]] ? details[@"title"] : nil;
+    return [title isKindOfClass:[NSString class]] && [title length] <= 200 ? title : nil;
+}
+
 NSURL *CentralYouTubeAudioURL(NSData *data, int64_t *contentLength)
 {
     *contentLength = 0;

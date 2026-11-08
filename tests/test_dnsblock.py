@@ -1,4 +1,7 @@
+import http.client
 import json
+import re
+from urllib.parse import urlencode
 from pathlib import Path
 import plistlib
 import socket
@@ -77,11 +80,13 @@ class DNSBlockTest(unittest.TestCase):
         self.blocklist.write_text("# comment\n ADS.Example. # note\ninvalid..example\n")
         self.upstream_file = folder / "upstream"
         self.upstream_file.write_text(LOOPBACK + "\n")
-        with socket.socket() as dns, socket.socket() as control:
+        with socket.socket() as dns, socket.socket() as control, socket.socket() as web:
             dns.bind((LOOPBACK, 0))
             control.bind((LOOPBACK, 0))
+            web.bind((LOOPBACK, 0))
             self.dns_port = dns.getsockname()[1]
             self.control_port = control.getsockname()[1]
+            self.web_port = web.getsockname()[1]
         self.process = None
         self.addCleanup(self.stop_service)
         self.start_service()
@@ -99,6 +104,7 @@ class DNSBlockTest(unittest.TestCase):
                 str(self.state),
                 "-",
                 LOOPBACK,
+                str(self.web_port),
             ]
         )
         for _ in range(50):
@@ -137,6 +143,57 @@ class DNSBlockTest(unittest.TestCase):
             client.settimeout(3)
             client.sendto(packet, (LOOPBACK, self.dns_port))
             return client.recv(65535)
+
+    def web(self, method, path, body=None, headers=None):
+        client = http.client.HTTPConnection(LOOPBACK, self.web_port, timeout=3)
+        try:
+            client.request(method, path, body, headers or {})
+            response = client.getresponse()
+            return response.status, response.getheader("Location"), response.read().decode()
+        finally:
+            client.close()
+
+    def enqueue(self, token, link):
+        return self.web("POST", "/queue", urlencode({"token": token, "link": link}),
+                        {"Content-Type": "application/x-www-form-urlencoded"})
+
+    def queue_token(self):
+        status, _, page = self.web("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("Fila da Casa", page)
+        return re.search(r"name=token value='([a-f0-9]{32})'", page)[1]
+
+    def test_music_queue_keeps_order_and_dns_control_local(self):
+        token = self.queue_token()
+        self.assertEqual(self.enqueue(token, "https://youtu.be/dQw4w9WgXcQ?si=123")[:2], (303, "/added"))
+        self.assertEqual(self.enqueue(token, "https://music.youtube.com/watch?list=abc&v=jNQXAC9IVRw")[0], 303)
+        self.assertIn("2 de 30", self.web("GET", "/added")[2])
+        self.assertEqual(self.web("POST", "/disable")[0], 404)
+        self.assertTrue(self.control(b"status\n")["enabled"])
+        self.assertEqual(self.control(b"next\n"), {"video": "dQw4w9WgXcQ"})
+        self.assertEqual(self.control(b"next\n"), {"video": "jNQXAC9IVRw"})
+        self.assertEqual(self.control(b"next\n"), {})
+
+    def test_music_queue_rejects_invalid_links_and_cross_site_posts(self):
+        token = self.queue_token()
+        self.assertEqual(self.enqueue("invalid", "https://youtu.be/dQw4w9WgXcQ")[0], 403)
+        for link in ("https://youtu.be.example/dQw4w9WgXcQ",
+                     "https://www.youtube.com/playlist?list=abc",
+                     "https://youtu.be/dQw4w9WgXcQ/extra",
+                     "https://www.youtube.com@other.example/watch?v=dQw4w9WgXcQ"):
+            self.assertEqual(self.enqueue(token, link)[0], 400)
+        with self.assertRaises(http.client.RemoteDisconnected):
+            self.web("GET", "/", headers={"Host": "unrelated.example"})
+        self.assertEqual(self.control(b"next\n"), {})
+
+    def test_music_queue_bounds_pending_requests(self):
+        token = self.queue_token()
+        link = "https://www.youtube.com/shorts/dQw4w9WgXcQ"
+        for _ in range(30):
+            self.assertEqual(self.enqueue(token, link)[0], 303)
+        self.assertEqual(self.enqueue(token, link)[0], 503)
+        self.assertEqual(self.control(b"next\n"), {"video": "dQw4w9WgXcQ"})
+        self.assertEqual(self.enqueue(token, link)[0], 303)
 
     def test_loads_automatic_list_alongside_local_rules(self):
         cache = self.state.with_suffix(".blocklist")

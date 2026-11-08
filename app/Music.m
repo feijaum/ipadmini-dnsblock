@@ -671,6 +671,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
         NSInteger status = http.statusCode;
         int64_t length = 0;
         NSURL *audio = !error && status == 200 ? CentralYouTubeAudioURL(data, &length) : nil;
+        NSString *title = audio ? CentralYouTubeVideoTitle(data) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.generation != generation) return;
             self.youtubeLookup = nil;
@@ -683,6 +684,7 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
                 if (self.didUpdate) self.didUpdate();
                 return;
             }
+            if (title.length) self.trackTitle = [NSString stringWithFormat:@"%@ · YouTube", title];
             self.summary = @"Baixando áudio do YouTube…";
             NSMutableURLRequest *download = [NSMutableURLRequest requestWithURL:audio
                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];

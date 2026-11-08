@@ -21,11 +21,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "music-page.h"
 
 enum { DNS_HEADER = 12, MAX_DNS = 65535, NAME_SIZE = 254, IO_MS = 1800 };
 enum { NXDOMAIN = 3, SERVFAIL = 2, REFUSED = 5 };
@@ -504,6 +507,237 @@ static bool store_state(bool enabled, bool compatibility)
     return true;
 }
 
+enum { QUEUE_LIMIT = 30, VIDEO_ID_SIZE = 12, FORM_LIMIT = 3200 };
+static struct {
+    char videos[QUEUE_LIMIT][VIDEO_ID_SIZE];
+    size_t head, count;
+    char token[33];
+    char host[INET_ADDRSTRLEN + 7];
+    char ip[INET_ADDRSTRLEN];
+    unsigned port;
+    bool available;
+    pthread_mutex_t lock;
+} music_queue = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static bool video_id(const char *link, char id[VIDEO_ID_SIZE])
+{
+    if (strncmp(link, "https://", 8))
+        return false;
+    const char *host = link + 8;
+    const char *path = strchr(host, '/');
+    if (!path)
+        return false;
+
+    size_t host_length = (size_t)(path - host);
+    const char *start = NULL;
+    if (host_length == 8 && !strncasecmp(host, "youtu.be", host_length)) {
+        start = path + 1;
+    } else {
+        const char *hosts[] = { "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com" };
+        bool allowed = false;
+        for (size_t i = 0; i < sizeof(hosts) / sizeof(*hosts); i++)
+            if (strlen(hosts[i]) == host_length && !strncasecmp(host, hosts[i], host_length))
+                allowed = true;
+        if (!allowed)
+            return false;
+
+        if (!strncmp(path, "/watch?", 7)) {
+            for (const char *part = path + 7; part && *part;) {
+                if (!strncmp(part, "v=", 2)) {
+                    start = part + 2;
+                    break;
+                }
+                part += strcspn(part, "&#");
+                part = *part == '&' ? part + 1 : NULL;
+            }
+        } else {
+            const char *prefixes[] = { "/shorts/", "/live/", "/embed/" };
+            for (size_t i = 0; i < sizeof(prefixes) / sizeof(*prefixes); i++)
+                if (!strncmp(path, prefixes[i], strlen(prefixes[i])))
+                    start = path + strlen(prefixes[i]);
+        }
+    }
+    if (!start || strcspn(start, "?&#") != VIDEO_ID_SIZE - 1)
+        return false;
+    const char allowed[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    if (strspn(start, allowed) != VIDEO_ID_SIZE - 1)
+        return false;
+    memcpy(id, start, VIDEO_ID_SIZE - 1);
+    id[VIDEO_ID_SIZE - 1] = '\0';
+    return true;
+}
+
+static int hex_digit(unsigned char ch)
+{
+    if (ch >= '0' && ch <= '9')
+        return ch - '0';
+    ch = (unsigned char)tolower(ch);
+    return ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : -1;
+}
+
+static bool decode_form_value(char *value)
+{
+    char *out = value;
+    for (char *in = value; *in; in++) {
+        unsigned char ch = (unsigned char)*in;
+        if (ch == '%') {
+            if (!in[1] || !in[2])
+                return false;
+            int high = hex_digit((unsigned char)in[1]), low = hex_digit((unsigned char)in[2]);
+            if (high < 0 || low < 0)
+                return false;
+            ch = (unsigned char)(16 * high + low);
+            in += 2;
+        } else if (ch == '+') {
+            ch = ' ';
+        }
+        if (ch < 32 || ch == 127)
+            return false;
+        *out++ = (char)ch;
+    }
+    *out = '\0';
+    return true;
+}
+
+static void music_response(int client, const char *status, const char *message, bool redirect, int64_t deadline)
+{
+    char page[2200], headers[512];
+    pthread_mutex_lock(&music_queue.lock);
+    size_t count = music_queue.count;
+    pthread_mutex_unlock(&music_queue.lock);
+    int size = redirect ? 0 : snprintf(page, sizeof(page), music_page, message, music_queue.token, count,
+                                        (unsigned)QUEUE_LIMIT);
+    if (size < 0 || (size_t)size >= sizeof(page))
+        return;
+    int length = snprintf(headers, sizeof(headers),
+        "HTTP/1.1 %s\r\nConnection: close\r\nContent-Type: text/html; charset=utf-8\r\n"
+        "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+        "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'\r\n"
+        "X-Frame-Options: DENY\r\n%sContent-Length: %d\r\n\r\n",
+        status, redirect ? "Location: /added\r\n" : "", size);
+    if (length > 0 && (size_t)length < sizeof(headers) &&
+        transfer(client, headers, (size_t)length, true, deadline) && size)
+        (void)transfer(client, page, (size_t)size, true, deadline);
+}
+
+static void handle_music_request(int client, int64_t deadline)
+{
+    char headers[4096];
+    size_t length = 0;
+    while (length < sizeof(headers) - 1 && transfer(client, headers + length, 1, false, deadline)) {
+        if (!headers[length++])
+            return;
+        if (length >= 4 && !memcmp(headers + length - 4, "\r\n\r\n", 4))
+            break;
+    }
+    if (length < 4 || memcmp(headers + length - 4, "\r\n\r\n", 4))
+        return;
+    headers[length] = '\0';
+    char *save = NULL;
+    const char *line = strtok_r(headers, "\r\n", &save);
+    bool get = line && (!strcmp(line, "GET / HTTP/1.1") || !strcmp(line, "GET /added HTTP/1.1"));
+    bool added = get && !strcmp(line, "GET /added HTTP/1.1");
+    bool post = line && !strcmp(line, "POST /queue HTTP/1.1");
+    bool host = false, form = false, length_seen = false;
+    long body_length = -1;
+    while ((line = strtok_r(NULL, "\r\n", &save))) {
+        if (!strncasecmp(line, "Host:", 5)) {
+            const char *value = line + 5 + strspn(line + 5, " \t");
+            if (host || (strcmp(value, music_queue.host) &&
+                         (music_queue.port != 80 || strcmp(value, music_queue.ip))))
+                return;
+            host = true;
+        } else if (!strncasecmp(line, "Content-Type:", 13)) {
+            const char *value = line + 13 + strspn(line + 13, " \t");
+            const char type[] = "application/x-www-form-urlencoded";
+            form = !strncasecmp(value, type, sizeof(type) - 1) &&
+                (value[sizeof(type) - 1] == '\0' || value[sizeof(type) - 1] == ';');
+        } else if (!strncasecmp(line, "Content-Length:", 15)) {
+            if (length_seen)
+                return;
+            length_seen = true;
+            char *end;
+            body_length = strtol(line + 15, &end, 10);
+            if (*end || body_length < 0 || body_length > FORM_LIMIT)
+                return;
+        } else if (!strncasecmp(line, "Transfer-Encoding:", 18)) {
+            return;
+        }
+    }
+    if (!host)
+        return;
+    if (get) {
+        music_response(client, "200 OK", added ? "Música adicionada à fila." : "Cole o link da música que você quer ouvir.",
+                       false, deadline);
+        return;
+    }
+    if (!post) {
+        music_response(client, "404 Not Found", "Abra a página inicial da fila.", false, deadline);
+        return;
+    }
+    char body[FORM_LIMIT + 1], id[VIDEO_ID_SIZE];
+    if (!form || body_length <= 0 || !transfer(client, body, (size_t)body_length, false, deadline) ||
+        memchr(body, '\0', (size_t)body_length))
+        return;
+    body[body_length] = '\0';
+    char *token = NULL, *link = NULL;
+    for (char *field = strtok_r(body, "&", &save); field; field = strtok_r(NULL, "&", &save)) {
+        if (!strncmp(field, "token=", 6) && !token)
+            token = field + 6;
+        else if (!strncmp(field, "link=", 5) && !link)
+            link = field + 5;
+        else
+            return;
+    }
+    if (!token || strcmp(token, music_queue.token)) {
+        music_response(client, "403 Forbidden", "Abra a página inicial novamente para enviar um pedido.", false, deadline);
+        return;
+    }
+    if (!link || !decode_form_value(link) || !video_id(link, id)) {
+        music_response(client, "400 Bad Request", "Cole o link de um vídeo do YouTube.", false, deadline);
+        return;
+    }
+    pthread_mutex_lock(&music_queue.lock);
+    bool full = music_queue.count == QUEUE_LIMIT;
+    if (!full) {
+        size_t tail = (music_queue.head + music_queue.count) % QUEUE_LIMIT;
+        memcpy(music_queue.videos[tail], id, sizeof(id));
+        music_queue.count++;
+    }
+    pthread_mutex_unlock(&music_queue.lock);
+    music_response(client, full ? "503 Service Unavailable" : "303 See Other",
+                   full ? "A fila está cheia. Aguarde uma música começar." : "", !full, deadline);
+}
+
+static void *music_web_loop(void *argument)
+{
+    int fd = *(int *)argument;
+    while (true) {
+        int client = accept_peer(fd, true);
+        handle_music_request(client, now_ms() + IO_MS);
+        close(client);
+    }
+    return NULL;
+}
+
+static void send_next_video(int client, int64_t deadline)
+{
+    char response[48] = "{}\n";
+    pthread_mutex_lock(&music_queue.lock);
+    bool queued = music_queue.count != 0;
+    if (queued)
+        snprintf(response, sizeof(response), "{\"video\":\"%s\"}\n", music_queue.videos[music_queue.head]);
+    pthread_mutex_unlock(&music_queue.lock);
+
+    // Only this worker consumes the queue. Keep the item if sending the response fails.
+    if (transfer(client, response, strlen(response), true, deadline) && queued) {
+        pthread_mutex_lock(&music_queue.lock);
+        music_queue.head = (music_queue.head + 1) % QUEUE_LIMIT;
+        music_queue.count--;
+        pthread_mutex_unlock(&music_queue.lock);
+    }
+}
+
 static void *control_loop(void *argument)
 {
     int fd = *(int *)argument;
@@ -515,6 +749,12 @@ static void *control_loop(void *argument)
         while (len < sizeof(command) - 1 && transfer(client, command + len, 1, false, deadline))
             if (command[len++] == '\n')
                 break;
+
+        if (len == 5 && !memcmp(command, "next\n", len)) {
+            send_next_video(client, deadline);
+            close(client);
+            continue;
+        }
 
         bool enable = len == 7 && !memcmp(command, "enable\n", len);
         bool disable = len == 8 && !memcmp(command, "disable\n", len);
@@ -536,9 +776,10 @@ static void *control_loop(void *argument)
             }
             if (saved)
                 snprintf(response, sizeof(response),
-                         "{\"enabled\":%s,\"compatibility\":%s,\"queries\":%llu,\"blocked\":%llu,\"automatic_domains\":%zu,\"ip\":\"%s\"}\n",
+                         "{\"enabled\":%s,\"compatibility\":%s,\"queries\":%llu,\"blocked\":%llu,\"automatic_domains\":%zu,\"ip\":\"%s\",\"web_queue\":%s}\n",
                          server.enabled ? "true" : "false", server.compatibility ? "true" : "false",
-                         server.queries, server.blocked, server.automatic.count, ip);
+                         server.queries, server.blocked, server.automatic.count, ip,
+                         music_queue.available ? "true" : "false");
             else
                 snprintf(response, sizeof(response), "{\"error\":\"falha ao salvar a preferência\"}\n");
             pthread_mutex_unlock(&server.lock);
@@ -584,19 +825,23 @@ static int listen_on(struct in_addr ip, unsigned port_number, int type)
 {
     int fd = socket(AF_INET, type, 0);
     if (fd < 0)
-        fatal("socket");
+        return -1;
     int yes = 1;
-    if (type == SOCK_STREAM && setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)))
-        fatal("setsockopt");
+    if (type == SOCK_STREAM && setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes))) {
+        close(fd);
+        return -1;
+    }
     struct sockaddr_in addr = { .sin_family = AF_INET, .sin_addr = ip,
                                 .sin_port = htons((uint16_t)port_number) };
 #ifdef __APPLE__
     addr.sin_len = sizeof(addr);
 #endif
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)))
-        fatal("bind");
-    if (type == SOCK_STREAM && listen(fd, 16))
-        fatal("listen");
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) || (type == SOCK_STREAM && listen(fd, 16))) {
+        int error = errno;
+        close(fd);
+        errno = error;
+        return -1;
+    }
     return fd;
 }
 
@@ -617,14 +862,14 @@ static void drop_privileges(const char *name)
 
 int main(int argc, char **argv)
 {
-    if (argc != 9 && argc != 10) {
+    if (argc < 9 || argc > 11) {
         fprintf(stderr, "Uso: %s interface porta-dns porta-controle dns-remoto porta-remota "
-                        "lista estado usuário [ip-local-para-teste]\n", argv[0]);
+                        "lista estado usuário [ip-local-para-teste [porta-web]]\n", argv[0]);
         return EXIT_FAILURE;
     }
     signal(SIGPIPE, SIG_IGN);
     const char *interface = argv[1];
-    if (argc == 10) {
+    if (argc >= 10) {
         if (inet_pton(AF_INET, argv[9], &server.lan) != 1 || !server.lan.s_addr)
             return EXIT_FAILURE;
         server.mask.s_addr = INADDR_BROADCAST;
@@ -663,8 +908,37 @@ int main(int argc, char **argv)
     }
     struct in_addr loopback = { .s_addr = htonl(INADDR_LOOPBACK) };
     int udp = listen_on(server.lan, dns_port, SOCK_DGRAM);
+    if (udp < 0)
+        fatal("DNS UDP");
     int tcp = listen_on(server.lan, dns_port, SOCK_STREAM);
+    if (tcp < 0)
+        fatal("DNS TCP");
     int control = listen_on(loopback, port(argv[3]), SOCK_STREAM);
+    if (control < 0)
+        fatal("controle");
+#ifdef DNSBLOCK_IOS
+    music_queue.port = 80;
+#endif
+    if (argc == 11)
+        music_queue.port = port(argv[10]);
+    int web = -1;
+    if (music_queue.port) {
+        unsigned char random[16];
+        FILE *source = fopen("/dev/urandom", "rb");
+        if (source && fread(random, 1, sizeof(random), source) == sizeof(random)) {
+            for (size_t i = 0; i < sizeof(random); i++)
+                snprintf(music_queue.token + 2 * i, 3, "%02x", (unsigned)random[i]);
+            inet_ntop(AF_INET, &server.lan, music_queue.ip, sizeof(music_queue.ip));
+            snprintf(music_queue.host, sizeof(music_queue.host), "%s:%u", music_queue.ip, music_queue.port);
+            web = listen_on(server.lan, music_queue.port, SOCK_STREAM);
+            if (web < 0)
+                perror("fila web");
+        } else {
+            fprintf(stderr, "Não foi possível inicializar a fila web.\n");
+        }
+        if (source)
+            fclose(source);
+    }
     drop_privileges(strcmp(argv[8], "-") == 0 ? NULL : argv[8]);
     if (!load_blocklist(argv[6], &server.local, false)) {
         fprintf(stderr, "Falha ao carregar a lista local: %s\n", argv[6]);
@@ -681,6 +955,14 @@ int main(int argc, char **argv)
         fclose(state);
     }
 
+    pthread_t web_worker;
+    if (web >= 0) {
+        music_queue.available = pthread_create(&web_worker, NULL, music_web_loop, &web) == 0;
+        if (!music_queue.available) {
+            close(web);
+            fprintf(stderr, "Falha ao iniciar a fila web.\n");
+        }
+    }
     pthread_t workers[3];
     if (pthread_create(&workers[0], NULL, udp_loop, &udp)
         || pthread_create(&workers[1], NULL, tcp_loop, &tcp)
@@ -688,7 +970,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Falha ao criar as threads do serviço.\n");
         return EXIT_FAILURE;
     }
-    if (argc == 10) {
+    if (argc >= 10) {
         pthread_join(workers[0], NULL);
         return EXIT_FAILURE;
     }

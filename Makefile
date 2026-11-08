@@ -5,7 +5,7 @@ WARNINGS = -Wall -Wextra -Werror
 .PHONY: all test ios clean
 all: build/dnsblock
 
-build/dnsblock: src/dnsblock.c
+build/dnsblock: src/dnsblock.c src/music-page.h
 	mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -std=c99 -pthread $< $(LDFLAGS) -o $@
 
