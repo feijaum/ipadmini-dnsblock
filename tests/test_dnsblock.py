@@ -138,6 +138,32 @@ class DNSBlockTest(unittest.TestCase):
             client.sendto(packet, (LOOPBACK, self.dns_port))
             return client.recv(65535)
 
+    def test_loads_automatic_list_alongside_local_rules(self):
+        cache = self.state.with_suffix(".blocklist")
+        cache.write_text("# Number of entries: 1000\n" + "".join(
+            f"ads-{index}.example.net\n" for index in range(1000)
+        ))
+        self.stop_service()
+        self.start_service()
+
+        self.assertEqual(self.control(b"status\n")["automatic_domains"], 1000)
+        self.assertEqual(self.ask(query("sub.ads-42.example.net"), tcp=True)[3] & 0x0F, 3)
+        self.assertEqual(self.ask(query("ads.example"))[3] & 0x0F, 3)
+        self.assertEqual(self.ask(query("example.net"))[3] & 0x0F, 0)
+        self.control(b"disable\n")
+        self.assertEqual(self.ask(query("ads-42.example.net"))[3] & 0x0F, 0)
+
+    def test_ignores_incomplete_automatic_list(self):
+        self.state.with_suffix(".blocklist").write_text(
+            "# Number of entries: 1001\n" + "ads.other.example\n" * 1000
+        )
+        self.stop_service()
+        self.start_service()
+
+        self.assertEqual(self.control(b"status\n")["automatic_domains"], 0)
+        self.assertEqual(self.ask(query("ads.other.example"))[3] & 0x0F, 0)
+        self.assertEqual(self.ask(query("ads.example"))[3] & 0x0F, 3)
+
     def test_blocks_domain_and_subdomain_on_udp_and_tcp(self):
         for tcp in (False, True):
             for name in ("ADS.Example", "sub.ads.example"):
