@@ -211,6 +211,7 @@ static NSURL *YouTubeTrackDirectory(void)
 @interface HouseMusic ()
 @property(nonatomic, readwrite, copy) NSString *summary;
 @property(nonatomic, strong) NSURLSession *session;
+@property(nonatomic, strong) NSURLSession *metadataSession;
 @property(nonatomic, strong) NSURLSessionDataTask *youtubeLookup;
 @property(nonatomic, copy) NSString *youtubeVisitor;
 @property(nonatomic, strong) NSDate *youtubeVisitorExpires;
@@ -259,6 +260,7 @@ static NSURL *YouTubeTrackDirectory(void)
         configuration.timeoutIntervalForRequest = 20;
         configuration.timeoutIntervalForResource = 120;
         _session = [NSURLSession sessionWithConfiguration:configuration delegate:[[MusicTransport alloc] init] delegateQueue:nil];
+        _metadataSession = [NSURLSession sessionWithConfiguration:configuration delegate:[[MusicTransport alloc] init] delegateQueue:nil];
     }
     return self;
 }
@@ -300,7 +302,7 @@ static NSURL *YouTubeTrackDirectory(void)
 
 - (void)loadTitlesForVideos:(NSArray *)videos
 {
-    if (self.loadingTitles) return;
+    if (self.loadingTitles || self.youtubeLookup || self.download) return;
     NSMutableOrderedSet *missing = [NSMutableOrderedSet orderedSet];
     NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
     for (NSString *video in videos) {
@@ -324,7 +326,7 @@ static NSURL *YouTubeTrackDirectory(void)
     for (NSString *video in ids) [self.titleAttempts setObject:@(now) forKey:video];
 
     self.loadingTitles = YES;
-    [[self.session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    [[self.metadataSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         BOOL success = !error && http.statusCode == 200;
         NSDictionary *titles = success && batch ? CentralYouTubeTitles(data) : @{};
@@ -354,7 +356,7 @@ static NSURL *YouTubeTrackDirectory(void)
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://i.ytimg.com/vi/%@/mqdefault.jpg", video]];
     if (!url) return nil;
     [self.loadingImages addObject:video];
-    [[self.session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    [[self.metadataSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         UIImage *image = !error && http.statusCode == 200 && data.length && data.length < 256 * 1024 ?
             [UIImage imageWithData:data] : nil;
@@ -580,14 +582,16 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];
             [download setValue:@"bytes=0-" forHTTPHeaderField:@"Range"];
             [download setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
-            [self downloadYouTubeAudio:download expectedBytes:length video:video attempt:attempt];
+            NSString *userAgent = [request valueForHTTPHeaderField:@"User-Agent"];
+            [self downloadYouTubeAudio:download expectedBytes:length video:video attempt:attempt userAgent:userAgent];
         });
     }];
     [self.youtubeLookup resume];
     if (self.didUpdate) self.didUpdate();
 }
 
-- (void)downloadYouTubeAudio:(NSURLRequest *)request expectedBytes:(int64_t)length video:(NSString *)video attempt:(NSUInteger)attempt
+- (void)downloadYouTubeAudio:(NSURLRequest *)request expectedBytes:(int64_t)length video:(NSString *)video
+                    attempt:(NSUInteger)attempt userAgent:(NSString *)userAgent
 {
     NSURL *directory = YouTubeTrackDirectory();
     if (!directory || ![[NSFileManager defaultManager] createDirectoryAtURL:directory
@@ -621,6 +625,16 @@ static NSString *YouTubeFailure(NSString *stage, NSHTTPURLResponse *response, NS
             self.download = nil;
             if (!file) {
                 NSString *failure = YouTubeFailure(@"download", response, error);
+                // Preserve the original range request first. A rejected range gets one full-file retry.
+                if (response.statusCode == 403 && [request valueForHTTPHeaderField:@"Range"].length) {
+                    if (!self.youtubeAudioFailure) self.youtubeAudioFailure = failure;
+                    NSMutableURLRequest *full = [request mutableCopy];
+                    [full setValue:nil forHTTPHeaderField:@"Range"];
+                    [full setValue:userAgent forHTTPHeaderField:@"User-Agent"];
+                    self.summary = @"Tentando outro modo de baixar o áudio…";
+                    [self downloadYouTubeAudio:full expectedBytes:length video:video attempt:attempt userAgent:userAgent];
+                    return;
+                }
                 BOOL storageError = [error.domain isEqualToString:NSURLErrorDomain] &&
                     (error.code == NSURLErrorCannotCreateFile || error.code == NSURLErrorCannotWriteToFile);
                 if (!storageError) {
