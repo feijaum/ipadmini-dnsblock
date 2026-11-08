@@ -4,6 +4,7 @@
 #import "Music.h"
 #import "YouTube.h"
 #import <EventKit/EventKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <arpa/inet.h>
 #import <errno.h>
 #include <math.h>
@@ -107,6 +108,98 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     return button;
 }
 
+static const NSTimeInterval PhotoRestDelay = 10 * 60;
+
+@interface CentralApplication : UIApplication
+@property(nonatomic, readonly) NSTimeInterval lastTouch;
+@property(nonatomic, readonly) BOOL touchesDown;
+- (void)resetPhotoRestTimer;
+@end
+
+@implementation CentralApplication
+
+- (void)resetPhotoRestTimer
+{
+    _lastTouch = [NSProcessInfo processInfo].systemUptime;
+    _touchesDown = NO;
+}
+
+- (void)sendEvent:(UIEvent *)event
+{
+    if (event.type == UIEventTypeTouches && event.allTouches.count) {
+        _lastTouch = [NSProcessInfo processInfo].systemUptime;
+        _touchesDown = NO;
+        for (UITouch *touch in event.allTouches) {
+            if (touch.phase != UITouchPhaseEnded && touch.phase != UITouchPhaseCancelled) {
+                _touchesDown = YES;
+                break;
+            }
+        }
+    }
+    [super sendEvent:event];
+}
+@end
+
+@interface PhotoRestView : UIControl
+@property(nonatomic, strong) UIImageView *photo;
+@property(nonatomic, strong) UILabel *clock;
+@property(nonatomic, strong) CAGradientLayer *shade;
+@end
+
+@implementation PhotoRestView
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = Color(0x101722);
+        self.clipsToBounds = YES;
+        self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        self.isAccessibilityElement = YES;
+        self.accessibilityViewIsModal = YES;
+        self.accessibilityLabel = @"Voltar ao painel da Central";
+        self.accessibilityTraits = UIAccessibilityTraitButton;
+
+        _photo = [[UIImageView alloc] init];
+        _photo.contentMode = UIViewContentModeScaleAspectFill;
+        _photo.clipsToBounds = YES;
+        [self addSubview:_photo];
+
+        _shade = [CAGradientLayer layer];
+        _shade.colors = @[(__bridge id)[UIColor clearColor].CGColor,
+                          (__bridge id)[UIColor colorWithWhite:0 alpha:0.72].CGColor];
+        [self.layer addSublayer:_shade];
+
+        _clock = Label(self, 64, @"HelveticaNeue-Light", 0xffffff);
+        _clock.textAlignment = NSTextAlignmentCenter;
+        _clock.shadowColor = [UIColor colorWithWhite:0 alpha:0.70];
+        _clock.shadowOffset = CGSizeMake(0, 2);
+    }
+    return self;
+}
+
+- (BOOL)accessibilityActivate
+{
+    [self sendActionsForControlEvents:UIControlEventTouchUpInside];
+    return YES;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    self.photo.frame = self.bounds;
+    CGFloat width = CGRectGetWidth(self.bounds);
+    CGFloat height = CGRectGetHeight(self.bounds);
+    CGFloat size = MIN(96, MIN(width, height) * 0.12);
+    CGFloat clockHeight = ceil(size * 1.25);
+    CGFloat bottom = MAX(22, height * 0.04);
+    self.clock.font = [UIFont fontWithName:@"HelveticaNeue-Light" size:size] ?: [UIFont systemFontOfSize:size];
+    self.clock.frame = CGRectMake(16, height - bottom - clockHeight, width - 32, clockHeight);
+    CGFloat shadeHeight = clockHeight + bottom + size * 0.65;
+    self.shade.frame = CGRectMake(0, height - shadeHeight, width, shadeHeight);
+}
+@end
+
 @interface HomePanel : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, UITableViewDelegate, UITableViewDataSource>
 @property(nonatomic, strong) UIView *clockCard;
 @property(nonatomic, strong) UIView *agendaCard;
@@ -125,6 +218,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 @property(nonatomic, strong) UILabel *photoHeading;
 @property(nonatomic, strong) UILabel *photoHint;
 @property(nonatomic, strong) UIImageView *photo;
+@property(nonatomic, strong) PhotoRestView *photoRest;
 @property(nonatomic, strong) UIButton *photoFitButton;
 @property(nonatomic, strong) DrivePhotos *drivePhotos;
 @property(nonatomic, strong) UIButton *filterButton;
@@ -566,11 +660,15 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 {
     NSDate *now = [NSDate date];
     self.clock.text = [self.clockFormat stringFromDate:now];
+    self.photoRest.clock.text = self.clock.text;
+    self.photoRest.accessibilityValue = self.clock.text;
     self.date.text = [self.dateFormat stringFromDate:now];
 }
 
 - (void)resume
 {
+    CentralApplication *app = (CentralApplication *)[UIApplication sharedApplication];
+    [app resetPhotoRestTimer];
     [self.weather resume];
     [self.drivePhotos resume];
     [self updateMusicButtons];
@@ -586,6 +684,7 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)pause
 {
+    [self dismissPhotoRest];
     [self.weather pause];
     [self.drivePhotos pause];
     [self.timer invalidate];
@@ -598,11 +697,36 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self updateMusicTime];
     [self checkWebQueue];
     NSInteger seconds = (NSInteger)[NSDate date].timeIntervalSince1970;
-    if ([NSProcessInfo processInfo].systemUptime - self.lastPhotoChange >= 5) [self nextPhoto];
+    NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
+    if (now - self.lastPhotoChange >= 5) [self nextPhoto];
+    CentralApplication *app = (CentralApplication *)[UIApplication sharedApplication];
+    if (!self.photoRest && !app.touchesDown && now - app.lastTouch >= PhotoRestDelay)
+        [self showPhotoRest];
     if (seconds % 60 == 0) {
         [self refreshStatus];
         [self updateAgenda];
     }
+}
+
+- (void)showPhotoRest
+{
+    UIWindow *window = [UIApplication sharedApplication].delegate.window;
+    if (!window) return;
+    [window endEditing:YES];
+    PhotoRestView *rest = [[PhotoRestView alloc] initWithFrame:window.bounds];
+    rest.photo.image = self.photo.image;
+    rest.clock.text = self.clock.text;
+    rest.accessibilityValue = self.clock.text;
+    [rest addTarget:self action:@selector(dismissPhotoRest) forControlEvents:UIControlEventTouchUpInside];
+    self.photoRest = rest;
+    [window addSubview:rest];
+}
+
+- (void)dismissPhotoRest
+{
+    [self.photoRest removeFromSuperview];
+    self.photoRest = nil;
+    [(CentralApplication *)[UIApplication sharedApplication] resetPhotoRestTimer];
 }
 
 - (void)checkWebQueue
@@ -823,10 +947,12 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
 
 - (void)showPhoto:(UIImage *)image
 {
-    if (image != self.photo.image) {
-        [UIView transitionWithView:self.photo duration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.55
+    UIImageView *visiblePhoto = self.photoRest ? self.photoRest.photo : self.photo;
+    if (self.photoRest) self.photo.image = image;
+    if (image != visiblePhoto.image) {
+        [UIView transitionWithView:visiblePhoto duration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.55
             options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionBeginFromCurrentState
-            animations:^{ self.photo.image = image; } completion:nil];
+            animations:^{ visiblePhoto.image = image; } completion:nil];
     }
     self.photoHint.text = self.drivePhotos.connected ? self.drivePhotos.status : @"Adicione fotos em Ajustes";
     self.photoHint.hidden = image != nil;
@@ -1041,11 +1167,21 @@ static UIButton *Button(UIView *parent, NSString *title, id target, SEL action)
     [self.window makeKeyAndVisible];
     return YES;
 }
+
+- (void)applicationDidBecomeActive:(UIApplication *)application
+{
+    application.idleTimerDisabled = YES;
+}
+
+- (void)applicationWillResignActive:(UIApplication *)application
+{
+    application.idleTimerDisabled = NO;
+}
 @end
 
 int main(int argc, char *argv[])
 {
     @autoreleasepool {
-        return UIApplicationMain(argc, argv, nil, NSStringFromClass([DNSBlockApp class]));
+        return UIApplicationMain(argc, argv, NSStringFromClass([CentralApplication class]), NSStringFromClass([DNSBlockApp class]));
     }
 }

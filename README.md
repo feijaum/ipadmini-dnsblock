@@ -4,9 +4,9 @@ Reaproveite um iPad ou iPhone antigo como bloqueador de anúncios e rastreadores
 
 ## Download
 
-A **Central da Casa 0.4.20** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
+A **Central da Casa 0.4.21** reúne relógio, clima, agenda, carrossel e DNSBlock em **um único pacote .deb** para ARMv7.
 
-1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.4.20-ios.1/dnsblock-central-0.4.20.deb).
+1. Baixe o [pacote para o iPad](https://github.com/feijaum/ipadmini-dnsblock/releases/download/v0.4.21-ios.1/dnsblock-central-0.4.21.deb).
 2. Com o Carbon ativo, abra o arquivo no **Filza** e toque em **Install**. O pacote atualiza o serviço DNS existente e preserva suas configurações. O ícone da Central é um relógio em fundo azul-escuro. Se ele não aparecer, confira se o Cydia tem o pacote **UIKit Tools** instalado, atualize o cache de ícones com `su mobile -c uicache` em um terminal root e faça um respring.
 3. Abra **Central da Casa**. Se você instalou o painel antigo por IPA, ele continua aparecendo como **DNSBlock**. Toque em **Bloqueio** para alternar o filtro. O iPad continua resolvendo DNS com o filtro desligado. O botão **Ajustes** mostra o IP e os contadores, permite selecionar a agenda e adicionar fotos.
 4. Escolha um calendário disponível no app **Calendário** do iPad. Se a conta Google estiver sincronizada com o iOS, selecione o calendário da família. Adicione as fotos pela fototeca do iPad. Para sincronizar uma pasta privada automaticamente, siga a [configuração do Google Drive](integrations/google-drive/README.md). O carrossel embaralha a pasta e tenta trocar a imagem a cada cinco segundos, com uma transição suave. O botão **Ajustar / Preencher** alterna entre a foto inteira e o preenchimento do quadro. A agenda mostra o mês e a legenda das datas ao lado.
@@ -17,7 +17,7 @@ A **Central da Casa 0.4.20** reúne relógio, clima, agenda, carrossel e DNSBloc
 
 Se o Safari antigo não baixar o arquivo, baixe no celular ou computador e transfira pelo [WebDAV do Filza](https://www.tigisoftware.com/default/?page_id=177#). Abra o endereço exibido pelo Filza em outro aparelho no mesmo Wi-Fi, envie o pacote e desative o WebDAV depois.
 
-O despertador continua no app **Relógio**. O painel segue o ajuste de bloqueio automático do iPad. O serviço DNS anterior foi testado em um iPad mini 1 com Carbon. A versão integrada ainda precisa de teste físico.
+O despertador continua no app **Relógio**. A Central mantém a tela ligada enquanto está em primeiro plano. Depois de 10 minutos sem tocar na tela, ela mostra o carrossel em tela cheia com o relógio na parte inferior. Toque na tela para voltar ao painel. Sem fotos disponíveis, o relógio aparece sobre um fundo escuro. O serviço DNS anterior foi testado em um iPad mini 1 com Carbon. A versão integrada ainda precisa de teste físico.
 
 ## YouTube na Central
 
@@ -74,7 +74,7 @@ Para gerar os pacotes, use um Mac com Xcode/SDK legado que compile para ARMv7 e 
 DEVELOPER_DIR=/Applications/Xcode-7.3.1.app/Contents/Developer make ios
 ```
 
-O script gera `dist/dnsblock-central-0.4.20.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
+O script gera `dist/dnsblock-central-0.4.21.deb`. O nome do Xcode no comando deve corresponder ao seu. Para gerar uma compilação universal experimental, use `IOS_ARCHS="armv7 arm64" make ios` com o ambiente do Xcode legado já selecionado. É possível informar os caminhos de compilador, SDK e assinador com `IOS_CLANG`, `IOS_SDK` e `LDID`.
 
 ## Configuração da rede
 
